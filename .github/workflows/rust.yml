@@ -17,11 +17,13 @@ jobs:
     steps:    
     - name: Checkout code
       uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --release --verbose
-    - name: Upload release asset
-      uses: softprops/action-gh-release@v2
-      with:
-        files: target/release/arti-facts
+    - name: Install rustup targets
+      run: rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu
+    - name: Build the executable
+      run: cargo build --release --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
+    - name: Upload release binaries
+      uses: alexellis/upload-assets@0.4.1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        asset_paths: '["target/x86_64-pc-windows-gnu/release/arti-facts.exe", "target/x86_64-unknown-linux-musl/release/arti-facts"]'
