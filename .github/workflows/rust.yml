@@ -27,6 +27,12 @@ jobs:
     - name: Build the executable
       run: cargo build --release --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
 
+    - name: List files
+      run: ls -al && ls target 
+
+    - name: List files in target
+      run: ls target/x86_64-pc-windows-gnu/release/ && ls target/x86_64-unknown-linux-musl/release/
+
     - name: Upload release binaries
       uses: alexellis/upload-assets@0.4.1
       env:
