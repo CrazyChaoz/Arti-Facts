@@ -1,0 +1,27 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:    
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --release --verbose
+    - name: Upload release asset
+      uses: softprops/action-gh-release@v2
+      with:
+        files: target/release/arti-facts
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
