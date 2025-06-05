@@ -1,22 +1,18 @@
 [package]
 name = "arti-facts"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 log = "0.4.27"
-serde_json = "1.0.140"
 tokio = "1.45.1"
 anyhow = "1.0.98"
-base64 = "0.22.1"
 futures = "0.3.31"
-futures-util = "0.3.31"
 hyper = { version = "1.4", features = ["http1", "server", "client"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 rand = "0.9.1"
-serde = { version = "1.0.219", features = ["derive"] }
 sha3 = "0.11.0-rc.0"
 base32 = "0.5"
 
@@ -29,3 +25,5 @@ tor-llcrypto = "0.30.0"
 tor-hscrypto = "0.30.0"
 
 ed25519-dalek = "2.1"
+zip = "4.0.0"
+walkdir = "2.5.0"

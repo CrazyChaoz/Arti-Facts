@@ -3,28 +3,31 @@ use clap::{Arg, Command};
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::TorClient;
 use futures::{Stream, StreamExt};
-use hyper::body::Incoming;
+use http_body_util::Full;
+use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use log::info;
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
 use std::fs;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::pin::Pin;
-use log::info;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use tor_proto::stream::IncomingStreamRequest;
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
+use zip::write::SimpleFileOptions;
+use zip::ZipWriter;
 
 fn new(
     data_directory: PathBuf,
     config_directory: PathBuf,
-    onion_address_secret_key: [u8; 32],
+    onion_address_secret_key: Option<[u8; 32]>,
 ) -> TorClient<PreferredRuntime> {
     info!("Starting Tor client");
 
@@ -54,7 +57,7 @@ fn new(
             client.clone(),
             data_directory,
             config_directory,
-            &onion_address_secret_key,
+            onion_address_secret_key,
         )
         .await;
         client
@@ -65,52 +68,56 @@ async fn onion_service_from_sk(
     tor_client: TorClient<PreferredRuntime>,
     data_directory: PathBuf,
     config_directory: PathBuf,
-    secret_key: &[u8],
-) -> String {
-    let sk = <[u8; 32]>::try_from(secret_key).expect("could not convert to [u8; 32]");
-    let sk = sk as ed25519_dalek::SecretKey;
-    let expanded_secret_key = ed25519_dalek::hazmat::ExpandedSecretKey::from(&sk);
-    let esk = <[u8; 64]>::try_from(
-        [
-            expanded_secret_key.scalar.to_bytes(),
-            expanded_secret_key.hash_prefix,
-        ]
-        .concat()
-        .as_slice(),
-    )
-    .unwrap();
-    let expanded_key_pair =
-        ExpandedKeypair::from_secret_key_bytes(esk).expect("error converting to ExpandedKeypair");
-    let pk = expanded_key_pair.public();
+    secret_key: Option<[u8;32]>,
+) {
 
-    let onion_address = get_onion_address(&pk.to_bytes());
-    let clone_onion_address = onion_address.clone();
-    let nickname = format!(
-        "arti-facts-{}",
-        onion_address.clone().chars().take(16).collect::<String>()
-    );
-
-    let encodable_key = tor_hscrypto::pk::HsIdKeypair::from(expanded_key_pair);
-
+    let nickname = "arti-facts-service";
+    
     let svc_cfg = OnionServiceConfigBuilder::default()
-        .nickname(nickname.clone().parse().unwrap())
+        .nickname(nickname.parse().unwrap())
         .build()
         .unwrap();
 
     let (onion_service, request_stream): (
         _,
         Pin<Box<dyn Stream<Item = tor_hsservice::RendRequest> + Send>>,
-    ) = if let Ok((service, stream)) =
-        tor_client.launch_onion_service_with_hsid(svc_cfg.clone(), encodable_key)
-    {
-        (service, Box::pin(stream))
-    } else {
-        // This key exists; reuse it
+    ) = if secret_key.is_none(){
+        // We are trying to reuse an old instance
         let (service, stream) = tor_client
             .launch_onion_service(svc_cfg)
             .expect("error creating onion service");
         (service, Box::pin(stream))
+    } else{
+        let secret_key = secret_key.unwrap();
+        let sk = secret_key as ed25519_dalek::SecretKey;
+        let expanded_secret_key = ed25519_dalek::hazmat::ExpandedSecretKey::from(&sk);
+        let esk = <[u8; 64]>::try_from(
+            [
+                expanded_secret_key.scalar.to_bytes(),
+                expanded_secret_key.hash_prefix,
+            ]
+                .concat()
+                .as_slice(),
+        )
+            .unwrap();
+        let expanded_key_pair =
+            ExpandedKeypair::from_secret_key_bytes(esk).expect("error converting to ExpandedKeypair");
+        
+        let encodable_key = tor_hscrypto::pk::HsIdKeypair::from(expanded_key_pair);
+        
+        if let Ok((service, stream)) =
+            tor_client.launch_onion_service_with_hsid(svc_cfg.clone(), encodable_key)
+        {
+            (service, Box::pin(stream))
+        } else {
+            // This key exists; reuse it
+            let (service, stream) = tor_client
+                .launch_onion_service(svc_cfg)
+                .expect("error creating onion service");
+            (service, Box::pin(stream))
+        }
     };
+    
     info!("onion service status: {:?}", onion_service.status());
 
     while let Some(status_event) = onion_service.status_events().next().await {
@@ -147,7 +154,9 @@ async fn onion_service_from_sk(
                         }),
                     )
                     .await
-                    .unwrap();
+                    .unwrap_or_else(|_| {
+                        info!("error serving connection");
+                    });
             }
             _ => {
                 stream_request.shutdown_circuit().unwrap();
@@ -156,8 +165,6 @@ async fn onion_service_from_sk(
     }
     drop(onion_service);
     info!("onion service dropped");
-
-    clone_onion_address
 }
 
 /// Handles an HTTP request by serving files or directory listings from the specified data directory,
@@ -185,7 +192,7 @@ async fn service_function(
     request: Request<Incoming>,
     data_dir: PathBuf,
     config_directory: PathBuf,
-) -> Result<Response<String>, anyhow::Error> {
+) -> Result<Response<Full<Bytes>>, anyhow::Error> {
     let path = request.uri().path().trim_start_matches('/').to_string();
     let mut file_path = data_dir.join(&path);
 
@@ -207,7 +214,50 @@ async fn service_function(
     {
         return Ok(Response::builder()
             .status(StatusCode::FORBIDDEN)
-            .body("Access to cache directory is forbidden".to_string())?);
+            .body(Full::<Bytes>::from(
+                "Access to cache directory is forbidden",
+            ))?);
+    }
+
+    // Check for ?download=zip
+    if request.uri().query() == Some("download=zip") && file_path.is_dir() {
+        // Dynamically create ZIP
+        let mut buffer = Vec::new();
+        {
+            let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            for entry in walkdir::WalkDir::new(&file_path) {
+                let entry = entry?;
+                let entry_path = entry.path();
+                // Skip files or directories that are inside the config_directory
+                if entry_path
+                    .canonicalize()
+                    .map(|p| p.starts_with(&config_directory))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if entry_path.is_file() {
+                    let name = entry_path
+                        .strip_prefix(&file_path)
+                        .unwrap()
+                        .to_string_lossy();
+                    zip.start_file(name, options)?;
+                    let mut f = fs::File::open(entry_path)?;
+                    std::io::copy(&mut f, &mut zip)?;
+                }
+            }
+            zip.finish()?;
+        }
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/zip")
+            .header(
+                "Content-Disposition",
+                "attachment; filename=\"download.zip\"",
+            )
+            .body(Full::<Bytes>::from(buffer))?);
     }
 
     // If path is a directory or root, list files
@@ -232,7 +282,7 @@ async fn service_function(
             }
         }
         let body = format!(
-            "<!DOCTYPE html><html><head><title>Index of /{0}</title></head><body><h1>Index of /{0}</h1><ul>{1}</ul></body></html>",
+            "<!DOCTYPE html><html><head><title>Index of /{0}</title></head><body><h1>Index of /{0}</h1><a href=\"/{path}?download=zip\">Download .zip</a><ul>{1}</ul></body></html>",
             path,
             entries
                 .iter()
@@ -249,7 +299,7 @@ async fn service_function(
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "text/html; charset=utf-8")
-            .body(body)?);
+            .body(Full::<Bytes>::from(body))?);
     }
 
     // If path is a file, return its contents
@@ -257,13 +307,15 @@ async fn service_function(
         let mut file = fs::File::open(&file_path)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        return Ok(Response::builder().status(StatusCode::OK).body(contents)?);
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Full::<Bytes>::from(contents))?);
     }
 
     // Not found
     Ok(Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body("File or directory not found".to_string())?)
+        .body(Full::<Bytes>::from("File or directory not found"))?)
 }
 
 /// Generates a random 32-byte secret key using a cryptographically secure random number generator.
@@ -369,5 +421,5 @@ fn main() {
 
     let secret_key = generate_key();
 
-    new(directory.clone(), config_directory.clone(), secret_key);
+    new(directory.clone(), config_directory.clone(), Some(secret_key));
 }
