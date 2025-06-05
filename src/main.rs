@@ -14,6 +14,7 @@ use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use std::pin::Pin;
+use log::info;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
@@ -25,7 +26,7 @@ fn new(
     config_directory: PathBuf,
     onion_address_secret_key: [u8; 32],
 ) -> TorClient<PreferredRuntime> {
-    eprintln!("Starting Tor client");
+    info!("Starting Tor client");
 
     let rt = if let Ok(runtime) = PreferredRuntime::current() {
         runtime
@@ -47,7 +48,7 @@ fn new(
     rt.block_on(async {
         let client = client_future.await.unwrap();
 
-        println!("Tor client started");
+        info!("Tor client started");
 
         onion_service_from_sk(
             client.clone(),
@@ -110,25 +111,25 @@ async fn onion_service_from_sk(
             .expect("error creating onion service");
         (service, Box::pin(stream))
     };
-    println!(
-        "onion service created: {}",
-        onion_service.onion_address().unwrap()
-    );
-    println!("status: {:?}", onion_service.status());
+    info!("onion service status: {:?}", onion_service.status());
 
     while let Some(status_event) = onion_service.status_events().next().await {
         if status_event.state().is_fully_reachable() {
             break;
         }
     }
-    println!("status: {:?}", onion_service.status());
+    println!(
+        "This directory is now available at: {}",
+        onion_service.onion_address().unwrap()
+    );
+    info!("onion service status: {:?}", onion_service.status());
 
     let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
 
     tokio::pin!(accepted_streams);
 
     while let Some(stream_request) = accepted_streams.next().await {
-        println!("new stream");
+        info!("new incoming stream");
         let request = stream_request.request().clone();
         match request {
             IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
@@ -154,7 +155,7 @@ async fn onion_service_from_sk(
         };
     }
     drop(onion_service);
-    println!("onion service dropped");
+    info!("onion service dropped");
 
     clone_onion_address
 }
@@ -332,15 +333,15 @@ fn main() {
     let current_directory = std::env::current_dir().unwrap();
 
     let directory = if let Some(dir) = matches.get_one::<String>("directory") {
-        println!("Working directory: {}", dir);
+        info!("Working directory: {}", dir);
         std::path::Path::new(dir)
             .canonicalize()
             .unwrap_or_else(|_| {
-                println!("Invalid directory specified, using current directory instead.");
+                info!("Invalid directory specified, using current directory instead.");
                 current_directory.clone()
             })
     } else {
-        println!("No directory specified, using default.");
+        info!("No directory specified, using default.");
         current_directory.clone()
     };
 
@@ -355,12 +356,12 @@ fn main() {
         };
         let arti_fact_dir = target_dir.join(".arti-fact-config");
         match std::fs::create_dir_all(&arti_fact_dir) {
-            Ok(_) => println!("Created directory: {:?}", arti_fact_dir),
-            Err(e) => eprintln!("Failed to create directory: {:?} ({})", arti_fact_dir, e),
+            Ok(_) => info!("Created directory: {:?}", arti_fact_dir),
+            Err(e) => info!("Failed to create directory: {:?} ({})", arti_fact_dir, e),
         }
         arti_fact_dir
     } else {
-        println!("No config file specified, using default.");
+        info!("No config file specified, using default.");
         std::env::current_dir().unwrap().join(".arti-fact-config")
     };
 
