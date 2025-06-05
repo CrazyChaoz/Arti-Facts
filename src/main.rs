@@ -151,7 +151,27 @@ async fn onion_service_from_sk(
     clone_onion_address
 }
 
-
+/// Handles an HTTP request by serving files or directory listings from the specified data directory,
+/// while restricting access to the configuration directory.
+///
+/// # Arguments
+///
+/// * `request` - The incoming HTTP request.
+/// * `data_dir` - The base directory from which files and directories are served.
+/// * `config_directory` - The directory containing configuration files, which must not be accessible.
+///
+/// # Returns
+///
+/// Returns a `Result` containing either a `Response<String>` with the requested file contents or directory listing,
+/// or an error if access is forbidden or the resource is not found.
+///
+/// # Behavior
+///
+/// - Prevents access to files outside `data_dir` or within `config_directory`.
+/// - If the requested path is a directory or root, returns an HTML index of its contents.
+/// - If the requested path is a file, returns its contents.
+/// - Returns 403 Forbidden if access to the config directory is attempted.
+/// - Returns 404 Not Found if the file or directory does not exist.
 async fn service_function(
     request: Request<Incoming>,
     data_dir: PathBuf,
