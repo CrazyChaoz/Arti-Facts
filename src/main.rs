@@ -49,7 +49,13 @@ fn new(
 
         println!("Tor client started");
 
-        onion_service_from_sk(client.clone(), data_directory, config_directory,&onion_address_secret_key).await;
+        onion_service_from_sk(
+            client.clone(),
+            data_directory,
+            config_directory,
+            &onion_address_secret_key,
+        )
+        .await;
         client
     })
 }
@@ -135,7 +141,9 @@ async fn onion_service_from_sk(
                 http1::Builder::new()
                     .serve_connection(
                         io,
-                        service_fn(|request| service_function(request, data_dir.clone(), config_directory.clone())),
+                        service_fn(|request| {
+                            service_function(request, data_dir.clone(), config_directory.clone())
+                        }),
                     )
                     .await
                     .unwrap();
@@ -183,10 +191,12 @@ async fn service_function(
     // Prevent access to any file outside of data_dir or to config_directory
     let data_dir_canon = data_dir.canonicalize()?;
     let file_path_canon = file_path.canonicalize().unwrap_or(data_dir_canon.clone());
-    if !file_path_canon.starts_with(&data_dir_canon) || file_path_canon.starts_with(&config_directory) {
+    if !file_path_canon.starts_with(&data_dir_canon)
+        || file_path_canon.starts_with(&config_directory)
+    {
         file_path = data_dir_canon;
     }
-    
+
     // Prevent access to config_directory or its subdirectories
     let config_directory = config_directory.canonicalize()?;
     if file_path
@@ -255,6 +265,22 @@ async fn service_function(
         .body("File or directory not found".to_string())?)
 }
 
+/// Generates a random 32-byte secret key using a cryptographically secure random number generator.
+///
+/// # Returns
+///
+/// A `[u8; 32]` array containing the generated secret key.
+///
+/// # Examples
+///
+/// ```
+/// let key = generate_key();
+/// assert_eq!(key.len(), 32);
+/// ```
+///
+/// # Notes
+///
+/// The `#[must_use]` attribute ensures that the returned key is not ignored.
 #[must_use]
 pub fn generate_key() -> [u8; 32] {
     let mut rng = rand::rng();
@@ -262,7 +288,6 @@ pub fn generate_key() -> [u8; 32] {
     rng.fill_bytes(&mut sk);
     sk
 }
-
 #[must_use]
 pub fn get_onion_address(public_key: &[u8]) -> String {
     let pub_key = <[u8; 32]>::try_from(public_key).expect("could not convert to [u8; 32]");
@@ -340,8 +365,8 @@ fn main() {
     };
 
     println!("Using config directory: {:?}", config_directory);
-    
+
     let secret_key = generate_key();
-    
+
     new(directory.clone(), config_directory.clone(), secret_key);
 }
