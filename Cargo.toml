@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 log = "0.4.27"
-tokio = "1.45.1"
+tokio = { version = "1.45.1", features = ["fs"] }
 anyhow = "1.0.98"
 futures = "0.3.31"
 hyper = { version = "1.4", features = ["http1", "server", "client"] }
@@ -27,3 +27,4 @@ tor-hscrypto = "0.30.0"
 ed25519-dalek = "2.1"
 zip = "4.0.0"
 walkdir = "2.5.0"
+tokio-util = { version = "0.7.15", features = ["io"] }
