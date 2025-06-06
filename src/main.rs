@@ -15,7 +15,7 @@ use hyper_util::rt::TokioIo;
 use log::info;
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
-use std::io::{Cursor};
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::pin::Pin;
 use tor_cell::relaycell::msg::Connected;
@@ -66,6 +66,21 @@ fn new(
     })
 }
 
+fn keypair_from_sk(secret_key: [u8; 32]) -> ExpandedKeypair {
+    let sk = secret_key as ed25519_dalek::SecretKey;
+    let expanded_secret_key = ed25519_dalek::hazmat::ExpandedSecretKey::from(&sk);
+    let esk = <[u8; 64]>::try_from(
+        [
+            expanded_secret_key.scalar.to_bytes(),
+            expanded_secret_key.hash_prefix,
+        ]
+        .concat()
+        .as_slice(),
+    )
+    .unwrap();
+    ExpandedKeypair::from_secret_key_bytes(esk).expect("error converting to ExpandedKeypair")
+}
+
 async fn onion_service_from_sk(
     tor_client: TorClient<PreferredRuntime>,
     data_directory: PathBuf,
@@ -90,19 +105,8 @@ async fn onion_service_from_sk(
         (service, Box::pin(stream))
     } else {
         let secret_key = secret_key.unwrap();
-        let sk = secret_key as ed25519_dalek::SecretKey;
-        let expanded_secret_key = ed25519_dalek::hazmat::ExpandedSecretKey::from(&sk);
-        let esk = <[u8; 64]>::try_from(
-            [
-                expanded_secret_key.scalar.to_bytes(),
-                expanded_secret_key.hash_prefix,
-            ]
-            .concat()
-            .as_slice(),
-        )
-        .unwrap();
-        let expanded_key_pair = ExpandedKeypair::from_secret_key_bytes(esk)
-            .expect("error converting to ExpandedKeypair");
+
+        let expanded_key_pair = keypair_from_sk(secret_key);
 
         let encodable_key = tor_hscrypto::pk::HsIdKeypair::from(expanded_key_pair);
 
@@ -264,7 +268,6 @@ async fn service_function(
             .body(Full::<Bytes>::from(buffer).map_err(|e| match e {}).boxed())
             .unwrap());
     }
-
     // If path is a directory or root, list files
     if file_path.is_dir() || path.is_empty() {
         let mut entries = Vec::new();
@@ -280,13 +283,45 @@ async fn service_function(
                 continue;
             }
             let name = entry.file_name().into_string().unwrap_or_default();
-            if entry_path.is_dir() {
-                entries.push(format!("{}/", name));
+            let metadata = entry.metadata()?;
+            let file_type = if entry_path.is_dir() { "📁" } else { "📄" };
+            let size = if entry_path.is_file() {
+                let len = metadata.len();
+                if len >= 1 << 30 {
+                    format!("{:.2} GiB", len as f64 / (1 << 30) as f64)
+                } else if len >= 1 << 20 {
+                    format!("{:.2} MiB", len as f64 / (1 << 20) as f64)
+                } else if len >= 1 << 10 {
+                    format!("{:.2} KiB", len as f64 / (1 << 10) as f64)
+                } else {
+                    format!("{} bytes", len)
+                }
             } else {
-                entries.push(name);
-            }
+                String::from("-")
+            };
+            let modified = metadata
+                .modified()
+                .ok()
+                .map(|m| {
+                    let datetime: chrono::DateTime<chrono::Local> = m.into();
+                    datetime.format("%H:%M %Y-%m-%d").to_string()
+                })
+                .unwrap_or_else(|| "-".to_string());
+            
+            entries.push(format!(
+                "<tr><td>{}</td><td><a href=\"/{href}\">{}</a></td><td>{}</td><td>{}</td></tr>",
+                file_type,
+                name,
+                size,
+                modified,
+                href = if path.is_empty() {
+                    format!("{}", name)
+                } else {
+                    format!("{}/{}", path, name)
+                }
+            ));
         }
-        let go_back = if path.is_empty() || file_path.eq(&data_dir){
+        let go_back = if path.is_empty() || file_path.eq(&data_dir) {
             String::new()
         } else {
             let parent = file_path
@@ -297,19 +332,14 @@ async fn service_function(
             format!("<br><br><a href=\"/{}\">⬆️ Parent directory</a>", parent)
         };
         let body = format!(
-            "<!DOCTYPE html><html><head><title>Index of /{0}</title></head><body><h1>Index of /{0}</h1><a href=\"/{path}?download=zip\">📦 Download .zip</a>{go_back}<ul>{1}</ul></body></html>",
+            "<!DOCTYPE html><html><head><title>Index of /{0}</title></head>\
+                           <body><h1>Index of /{0}</h1>\
+                           <a href=\"/{path}?download=zip\">📦 Download .zip</a>{go_back}\
+                           <table border=\"1\" cellpadding=\"4\" cellspacing=\"0\">\
+                           <tr><th>Type</th><th>Name</th><th>Size</th><th>Modified</th></tr>\
+                           {1}</table></body></html>",
             path,
-            entries
-                .iter()
-                .map(|e| {
-                    let href = if path.is_empty() {
-                        format!("{}", e)
-                    } else {
-                        format!("{}/{}", path, e)
-                    };
-                    format!("<li><a href=\"/{href}\">{}</a></li>", e)
-                })
-                .collect::<String>()
+            entries.join("")
         );
         return Ok(Response::builder()
             .status(StatusCode::OK)
@@ -409,6 +439,13 @@ fn main() {
                 .value_name("FILE")
                 .help("Sets a custom config file, you need read and write permissions on it"),
         )
+        .arg(
+            Arg::new("secret-key")
+                .short('s')
+                .long("secret-key")
+                .value_name("HEX")
+                .help("Provide a 32-byte secret key in hexadecimal format"),
+        )
         .get_matches();
 
     let current_directory = std::env::current_dir().unwrap();
@@ -427,6 +464,17 @@ fn main() {
     };
 
     println!("Sharing directory: {:?}", directory);
+
+    let secret_key = if let Some(hex_key) = matches.get_one::<String>("HEX") {
+        if hex_key.len() != 64 {
+            panic!("Secret key must be a 32-byte hexadecimal string (64 characters).");
+        }
+        let mut sk = [0u8; 32];
+        hex::decode_to_slice(hex_key, &mut sk).expect("Invalid hex string for secret key");
+        Some(sk)
+    } else {
+        None
+    };
 
     let config_directory = if let Some(cfg) = matches.get_one::<String>("config") {
         let config_path = std::path::Path::new(cfg);
