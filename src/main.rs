@@ -333,7 +333,7 @@ async fn service_function(
                 .unwrap_or_else(|| "-".to_string());
 
             entries.push(format!(
-                "<tr><td>{}</td><td><a href=\"/{href}\">{}</a></td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td><a href=\"/{href}\">{}</a></td><td>{}</td><td>{}</td><td><a href=\"/{href}?download\" class=\"download-button\">⬇️</a></td></tr>",
                 file_type,
                 name,
                 size,
@@ -456,7 +456,7 @@ pub fn get_onion_address(public_key: &[u8]) -> String {
 
 fn main() {
     let matches = Command::new("arti-facts")
-        .version("2.0.1")
+        .version("2.1.0")
         .about("A simple file sharing service over Tor onion services")
         .arg(
             Arg::new("directory")

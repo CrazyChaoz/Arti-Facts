@@ -142,13 +142,35 @@
             color: #fff;
         }
 
+        .download-button {
+            display: inline-block;
+            width: 70%;
+            background: #38a169;
+            color: #fff;
+            padding: 0.3em 0.8em;
+            border-radius: 4px;
+            font-size: 1em;
+            font-weight: 500;
+            text-align: center;
+            text-decoration: none;
+            transition: background 0.2s, box-shadow 0.2s;
+            box-shadow: 0 2px 6px rgba(44, 62, 80, 0.08);
+        }
+
+        .download-button:hover {
+            background: #276749;
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(44, 62, 80, 0.12);
+            text-decoration: none;
+        }
+
     </style>
 </head>
 <body><h1>Index of /{0}</h1>
 <div class="button-bar">
     <!-- Parent directory button, only show if not at root -->
     {parent_dir}
-    <a href="/{0}?download=zip" class="button right">📦 Download .zip</a>
+    <a href="/{0}?download" class="button right">📦 Download .zip</a>
 </div>
 <table>
     <colgroup>
@@ -156,12 +178,14 @@
         <col>
         <col style="width: 120px;">
         <col style="width: 180px;">
+        <col style="width: 120px;">
     </colgroup>
     <tr>
         <th></th>
         <th>Name</th>
         <th>Size</th>
         <th>Modified</th>
+        <th>Download</th>
     </tr>
     {1}
 </table>
