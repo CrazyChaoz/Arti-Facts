@@ -27,6 +27,8 @@ use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 
 use async_zip::{tokio::write::ZipFileWriter, Compression};
 
+const INDEX_TEMPLATE: &str = include_str!("index.html");
+
 fn new(
     data_directory: PathBuf,
     config_directory: PathBuf,
@@ -326,7 +328,7 @@ async fn service_function(
                 .ok()
                 .map(|m| {
                     let datetime: chrono::DateTime<chrono::Local> = m.into();
-                    datetime.format("%H:%M %Y-%m-%d").to_string()
+                    datetime.format("%H:%M | %Y-%m-%d").to_string()
                 })
                 .unwrap_or_else(|| "-".to_string());
 
@@ -344,25 +346,20 @@ async fn service_function(
             ));
         }
         let go_back = if path.is_empty() || file_path.eq(&data_dir) {
-            String::new()
+            "<span class=\"left\"></span>".to_string()
         } else {
             let parent = file_path
                 .parent()
                 .and_then(|p| p.strip_prefix(&data_dir).ok())
                 .and_then(|p| p.to_str())
-                .unwrap_or("");
-            format!("<br><br><a href=\"/{}\">⬆️ Parent directory</a>", parent)
+                .unwrap_or("<span class=\"left\"></span>");
+            format!("<a href=\"/{}\" class=\"button left\">⬆️ Parent directory</a>", parent)
         };
-        let body = format!(
-            "<!DOCTYPE html><html><head><title>Index of /{0}</title></head>\
-                           <body><h1>Index of /{0}</h1>\
-                           <a href=\"/{path}?download=zip\">📦 Download .zip</a>{go_back}\
-                           <table border=\"1\" cellpadding=\"4\" cellspacing=\"0\">\
-                           <tr><th>Type</th><th>Name</th><th>Size</th><th>Modified</th></tr>\
-                           {1}</table></body></html>",
-            path,
-            entries.join("")
-        );
+        let body = INDEX_TEMPLATE
+            .replace("{0}", &path)
+            .replace("{1}", &entries.join(""))
+            .replace("{parent_dir}", &go_back);
+        
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "text/html; charset=utf-8")

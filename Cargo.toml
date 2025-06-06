@@ -1,13 +1,12 @@
 [package]
 name = "arti-facts"
-version = "1.4.0"
+version = "2.0.0"
 edition = "2024"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 log = "0.4.27"
 tokio = { version = "1.45.1", features = ["fs"] }
-anyhow = "1.0.98"
 futures = "0.3.31"
 hyper = { version = "1.4", features = ["http1", "server", "client"] }
 http-body-util = "0.1"
