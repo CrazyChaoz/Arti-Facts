@@ -560,6 +560,7 @@ fn main() {
             _ => {
                 // Ask user to choose
                 println!("Multiple config directories found:");
+                println!("  [0] Create a new directory");
                 for (i, entry) in config_dirs.iter().enumerate() {
                     println!("  [{}] {}", i + 1, entry.path().display());
                 }
@@ -567,12 +568,26 @@ fn main() {
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input).unwrap();
                 let idx: usize = input.trim().parse().expect("Invalid input");
-                config_dirs
-                    .get(idx - 1)
-                    .expect("Invalid selection")
-                    .path()
-                    .canonicalize()
-                    .unwrap()
+                if idx == 0 {
+                    // Create new
+                    secret_key = Some(generate_key());
+                    let onion_addr = get_onion_address(
+                        &ed25519_dalek::SigningKey::from_bytes(&secret_key.unwrap())
+                            .verifying_key()
+                            .to_bytes(),
+                    );
+                    let dir_name = format!(".arti-fact-config-{}", onion_addr);
+                    let dir_path = config_directory.join(dir_name).clone();
+                    fs::create_dir_all(&dir_path).expect("Failed to create config directory");
+                    dir_path.canonicalize().unwrap()
+                } else {
+                    config_dirs
+                        .get(idx - 1)
+                        .expect("Invalid selection")
+                        .path()
+                        .canonicalize()
+                        .unwrap()
+                }
             }
         }
     };
