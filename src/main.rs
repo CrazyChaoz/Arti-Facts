@@ -220,38 +220,68 @@ async fn service_function(
             )
             .unwrap());
     }
-
+    
     // Check for ?download=zip
     if request.uri().query() == Some("download=zip") && file_path.is_dir() {
-        // Dynamically create ZIP
-        let mut buffer = Vec::new();
-        {
-            let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
-            let options =
-                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-            for entry in walkdir::WalkDir::new(&file_path) {
-                let entry = entry?;
-                let entry_path = entry.path();
-                // Skip files or directories that are inside the config_directory
-                if entry_path
-                    .canonicalize()
-                    .map(|p| p.starts_with(&config_directory))
-                    .unwrap_or(false)
-                {
+        // Create a temporary file in the config directory
+        let mut temp_zip_path = config_directory.clone();
+        let mut zip_file;
+        loop {
+            let unique_id = uuid::Uuid::new_v4().to_string();
+            temp_zip_path.push(format!("download-{}.zip", unique_id));
+            match fs::File::create_new(&temp_zip_path) {
+                Ok(f) => {
+                    zip_file = f;
+                    break;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    temp_zip_path.pop();
                     continue;
                 }
-                if entry_path.is_file() {
-                    let name = entry_path
-                        .strip_prefix(&file_path)
-                        .unwrap()
-                        .to_string_lossy();
-                    zip.start_file(name, options)?;
-                    let mut f = fs::File::open(entry_path)?;
-                    std::io::copy(&mut f, &mut zip)?;
-                }
+                Err(e) => return Err(e),
             }
-            zip.finish()?;
         }
+        let mut zip = ZipWriter::new(&mut zip_file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::DEFLATE);
+        for entry in walkdir::WalkDir::new(&file_path) {
+            let entry = entry?;
+            let entry_path = entry.path();
+            // Skip files or directories that are inside the config_directory
+            if entry_path
+                .canonicalize()
+                .map(|p| p.starts_with(&config_directory))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if entry_path.is_file() {
+                let name = entry_path
+                    .strip_prefix(&file_path)
+                    .unwrap()
+                    .to_string_lossy();
+                zip.start_file(name, options)?;
+                let mut f = fs::File::open(entry_path)?;
+                std::io::copy(&mut f, &mut zip)?;
+            }
+        }
+        zip.finish()?;
+
+        // Stream the file in the HTTP response
+        let file = tokio::fs::File::open(&temp_zip_path).await?;
+        let reader_stream = tokio_util::io::ReaderStream::new(file);
+        let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
+        let boxed_body = BodyExt::boxed(stream_body);
+
+
+        // Remove the temporary file after sending
+        let temp_zip_path_clone = temp_zip_path.clone();
+        tokio::spawn(async move {
+            // Wait a bit to ensure the file is not in use
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            let _ = tokio::fs::remove_file(temp_zip_path_clone).await;
+        });
+        
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/zip")
@@ -259,9 +289,10 @@ async fn service_function(
                 "Content-Disposition",
                 "attachment; filename=\"download.zip\"",
             )
-            .body(Full::<Bytes>::from(buffer).map_err(|e| match e {}).boxed())
+            .body(boxed_body)
             .unwrap());
     }
+
     // If path is a directory or root, list files
     if file_path.is_dir() || path.is_empty() {
         let mut entries = Vec::new();
