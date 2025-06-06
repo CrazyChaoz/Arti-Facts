@@ -223,7 +223,7 @@ async fn service_function(
             )
             .unwrap());
     }
-    if request.uri().query() == Some("download=zip") && file_path.is_dir() {
+    if request.uri().query() == Some("download") && file_path.is_dir() {
         // Create a pipe with large buffer
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
 
@@ -353,13 +353,16 @@ async fn service_function(
                 .and_then(|p| p.strip_prefix(&data_dir).ok())
                 .and_then(|p| p.to_str())
                 .unwrap_or("<span class=\"left\"></span>");
-            format!("<a href=\"/{}\" class=\"button left\">⬆️ Parent directory</a>", parent)
+            format!(
+                "<a href=\"/{}\" class=\"button left\">⬆️ Parent directory</a>",
+                parent
+            )
         };
         let body = INDEX_TEMPLATE
             .replace("{0}", &path)
             .replace("{1}", &entries.join(""))
             .replace("{parent_dir}", &go_back);
-        
+
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "text/html; charset=utf-8")
@@ -378,11 +381,22 @@ async fn service_function(
         let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
         let boxed_body = BodyExt::boxed(stream_body);
 
+        let file_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download");
+
+        let mut response_builder = Response::builder().status(StatusCode::OK);
+
+        if request.uri().query() == Some("download") {
+            response_builder = response_builder.header(
+                "Content-Disposition",
+                format!("attachment; filename=\"{}\"", file_name),
+            );
+        }
+
         // Send response
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .body(boxed_body)
-            .unwrap());
+        return Ok(response_builder.body(boxed_body).unwrap());
     }
 
     // Not found
