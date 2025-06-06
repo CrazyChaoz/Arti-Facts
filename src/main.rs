@@ -68,17 +68,11 @@ fn new(
 
 fn keypair_from_sk(secret_key: [u8; 32]) -> ExpandedKeypair {
     let sk = secret_key as ed25519_dalek::SecretKey;
-    let expanded_secret_key = ed25519_dalek::hazmat::ExpandedSecretKey::from(&sk);
-    let esk = <[u8; 64]>::try_from(
-        [
-            expanded_secret_key.scalar.to_bytes(),
-            expanded_secret_key.hash_prefix,
-        ]
-        .concat()
-        .as_slice(),
-    )
-    .unwrap();
-    ExpandedKeypair::from_secret_key_bytes(esk).expect("error converting to ExpandedKeypair")
+    let esk = ed25519_dalek::hazmat::ExpandedSecretKey::from(&sk);
+    let mut bytes = [0u8; 64];
+    bytes[..32].copy_from_slice(&esk.scalar.to_bytes());
+    bytes[32..].copy_from_slice(&esk.hash_prefix);
+    ExpandedKeypair::from_secret_key_bytes(bytes).expect("error converting to ExpandedKeypair")
 }
 
 async fn onion_service_from_sk(
@@ -220,7 +214,7 @@ async fn service_function(
         return Ok(Response::builder()
             .status(StatusCode::FORBIDDEN)
             .body(
-                Full::new("Access to cache directory is forbidden".as_bytes().into())
+                Full::new("Access to config directory is forbidden".as_bytes().into())
                     .map_err(|e| match e {})
                     .boxed(),
             )
@@ -274,7 +268,7 @@ async fn service_function(
         for entry in fs::read_dir(&file_path)? {
             let entry = entry?;
             let entry_path = entry.path();
-            // Skip cache_dir and its contents
+            // Skip config_dir and its contents
             if entry_path
                 .canonicalize()
                 .map(|p| p.starts_with(&config_directory))
@@ -307,7 +301,7 @@ async fn service_function(
                     datetime.format("%H:%M %Y-%m-%d").to_string()
                 })
                 .unwrap_or_else(|| "-".to_string());
-            
+
             entries.push(format!(
                 "<tr><td>{}</td><td><a href=\"/{href}\">{}</a></td><td>{}</td><td>{}</td></tr>",
                 file_type,
@@ -357,7 +351,7 @@ async fn service_function(
 
         // Convert to http_body_util::BoxBody
         let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
-        let boxed_body = http_body_util::BodyExt::boxed(stream_body);
+        let boxed_body = BodyExt::boxed(stream_body);
 
         // Send response
         return Ok(Response::builder()
@@ -465,7 +459,7 @@ fn main() {
 
     println!("Sharing directory: {:?}", directory);
 
-    let secret_key = if let Some(hex_key) = matches.get_one::<String>("HEX") {
+    let mut secret_key = if let Some(hex_key) = matches.get_one::<String>("HEX") {
         if hex_key.len() != 64 {
             panic!("Secret key must be a 32-byte hexadecimal string (64 characters).");
         }
@@ -478,29 +472,84 @@ fn main() {
 
     let config_directory = if let Some(cfg) = matches.get_one::<String>("config") {
         let config_path = std::path::Path::new(cfg);
-        let target_dir = if config_path.exists() && config_path.is_dir() {
-            config_path
+        if config_path.exists() && config_path.is_dir() {
+            config_path.canonicalize().unwrap()
         } else {
-            current_directory.as_path()
-        };
-        let arti_fact_dir = target_dir.join(".arti-fact-config");
-        match std::fs::create_dir_all(&arti_fact_dir) {
-            Ok(_) => info!("Created directory: {:?}", arti_fact_dir),
-            Err(e) => info!("Failed to create directory: {:?} ({})", arti_fact_dir, e),
+            current_directory.clone()
         }
-        arti_fact_dir
     } else {
         info!("No config file specified, using default.");
-        std::env::current_dir().unwrap().join(".arti-fact-config")
+        std::env::current_dir().unwrap()
+    };
+    // If a key is provided, create a directory for the config with onion service name from the key.
+    // If that directory does not exist, create it, if it does, use it.
+    // If no key is provided, check if any directory exists that starts with .arti-fact-config.
+    // If no such directory exists, create one.
+    // If exactly one such directory exists, use it.
+    // If multiple such directories exist, make the user choose one in the CLI.
+
+    let config_directory = if let Some(sk) = secret_key {
+        // Use onion address as config dir name
+        let onion_addr = get_onion_address(
+            &ed25519_dalek::SigningKey::from_bytes(&sk)
+                .verifying_key()
+                .to_bytes(),
+        );
+        let dir_name = format!(".arti-fact-config-{}", onion_addr);
+        let dir_path = config_directory.join(dir_name.clone()).clone();
+        if !dir_path.exists() {
+            fs::create_dir_all(&dir_path).expect("Failed to create config directory");
+        }
+        dir_path.canonicalize().unwrap()
+    } else {
+        // Find all dirs starting with .arti-fact-config
+        let mut config_dirs: Vec<_> = fs::read_dir(config_directory.clone())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".arti-fact-config")
+            })
+            .collect();
+
+        match config_dirs.len() {
+            0 => {
+                // Create new
+                secret_key = Some(generate_key());
+                let onion_addr = get_onion_address(
+                    &ed25519_dalek::SigningKey::from_bytes(&secret_key.unwrap())
+                        .verifying_key()
+                        .to_bytes(),
+                );
+                let dir_name = format!(".arti-fact-config-{}", onion_addr);
+                let dir_path = config_directory.join(dir_name).clone();
+                fs::create_dir_all(&dir_path).expect("Failed to create config directory");
+                dir_path.canonicalize().unwrap()
+            }
+            1 => config_dirs.pop().unwrap().path().canonicalize().unwrap(),
+            _ => {
+                // Ask user to choose
+                println!("Multiple config directories found:");
+                for (i, entry) in config_dirs.iter().enumerate() {
+                    println!("  [{}] {}", i + 1, entry.path().display());
+                }
+                println!("Select a config directory by number:");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                let idx: usize = input.trim().parse().expect("Invalid input");
+                config_dirs
+                    .get(idx - 1)
+                    .expect("Invalid selection")
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+            }
+        }
     };
 
     println!("Using config directory: {:?}", config_directory);
 
-    let secret_key = generate_key();
-
-    new(
-        directory.clone(),
-        config_directory.clone(),
-        Some(secret_key),
-    );
+    new(directory.clone(), config_directory.clone(), secret_key);
 }
