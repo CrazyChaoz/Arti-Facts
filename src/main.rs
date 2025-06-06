@@ -1,9 +1,10 @@
 use clap::{Arg, Command};
-use futures::TryStreamExt;
+use futures::{AsyncWriteExt, TryStreamExt};
 use std::fs;
 
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::TorClient;
+use async_zip::{ZipEntryBuilder, ZipString};
 use futures::{Stream, StreamExt};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
@@ -15,16 +16,16 @@ use hyper_util::rt::TokioIo;
 use log::info;
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
-use std::io::Cursor;
 use std::path::PathBuf;
 use std::pin::Pin;
+use tokio_util::io::ReaderStream;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use tor_proto::stream::IncomingStreamRequest;
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
-use zip::write::SimpleFileOptions;
-use zip::ZipWriter;
+
+use async_zip::{tokio::write::ZipFileWriter, Compression};
 
 fn new(
     data_directory: PathBuf,
@@ -220,68 +221,64 @@ async fn service_function(
             )
             .unwrap());
     }
-    
-    // Check for ?download=zip
     if request.uri().query() == Some("download=zip") && file_path.is_dir() {
-        // Create a temporary file in the config directory
-        let mut temp_zip_path = config_directory.clone();
-        let mut zip_file;
-        loop {
-            let unique_id = uuid::Uuid::new_v4().to_string();
-            temp_zip_path.push(format!("download-{}.zip", unique_id));
-            match fs::File::create_new(&temp_zip_path) {
-                Ok(f) => {
-                    zip_file = f;
-                    break;
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    temp_zip_path.pop();
+        // Create a pipe with large buffer
+        let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+
+        let file_path = file_path.clone();
+        let config_directory = config_directory.clone();
+
+        // Spawn async task to write ZIP
+        tokio::spawn(async move {
+            let mut zip = ZipFileWriter::with_tokio(&mut writer);
+
+            let walker = walkdir::WalkDir::new(&file_path).follow_links(true);
+            for entry in walker {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                let path = entry.path();
+
+                // Skip config directory
+                if path
+                    .canonicalize()
+                    .map(|p| p.starts_with(&config_directory))
+                    .unwrap_or(false)
+                {
                     continue;
                 }
-                Err(e) => return Err(e),
-            }
-        }
-        let mut zip = ZipWriter::new(&mut zip_file);
-        let options =
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::DEFLATE);
-        for entry in walkdir::WalkDir::new(&file_path) {
-            let entry = entry?;
-            let entry_path = entry.path();
-            // Skip files or directories that are inside the config_directory
-            if entry_path
-                .canonicalize()
-                .map(|p| p.starts_with(&config_directory))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            if entry_path.is_file() {
-                let name = entry_path
-                    .strip_prefix(&file_path)
-                    .unwrap()
-                    .to_string_lossy();
-                zip.start_file(name, options)?;
-                let mut f = fs::File::open(entry_path)?;
-                std::io::copy(&mut f, &mut zip)?;
-            }
-        }
-        zip.finish()?;
 
-        // Stream the file in the HTTP response
-        let file = tokio::fs::File::open(&temp_zip_path).await?;
-        let reader_stream = tokio_util::io::ReaderStream::new(file);
+                if path.is_file() {
+                    let name = match path.strip_prefix(&file_path) {
+                        Ok(n) => n.to_string_lossy(),
+                        Err(_) => continue,
+                    };
+
+                    if let Ok(data) = tokio::fs::read(&path).await {
+                        let builder = ZipEntryBuilder::new(
+                            ZipString::from(name.as_ref()),
+                            Compression::Deflate,
+                        );
+                        let mut entry_writer = zip.write_entry_stream(builder).await.unwrap();
+                        entry_writer
+                            .write_all(&data)
+                            .await
+                            .expect("error writing to zip entry");
+
+                        entry_writer.close().await.unwrap();
+                    }
+                }
+            }
+
+            let _ = zip.close().await;
+        });
+
+        // Stream the ZIP file
+        let reader_stream = ReaderStream::new(reader);
         let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
         let boxed_body = BodyExt::boxed(stream_body);
 
-
-        // Remove the temporary file after sending
-        let temp_zip_path_clone = temp_zip_path.clone();
-        tokio::spawn(async move {
-            // Wait a bit to ensure the file is not in use
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            let _ = tokio::fs::remove_file(temp_zip_path_clone).await;
-        });
-        
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", "application/zip")
@@ -448,8 +445,8 @@ pub fn get_onion_address(public_key: &[u8]) -> String {
 
 fn main() {
     let matches = Command::new("arti-facts")
-        .version("0.1.0")
-        .about("A CLI tool")
+        .version("1.4.0")
+        .about("A simple file sharing service over Tor onion services")
         .arg(
             Arg::new("directory")
                 .short('d')
@@ -465,9 +462,9 @@ fn main() {
                 .help("Sets a custom config file, you need read and write permissions on it"),
         )
         .arg(
-            Arg::new("secret-key")
-                .short('s')
-                .long("secret-key")
+            Arg::new("key")
+                .short('k')
+                .long("key")
                 .value_name("HEX")
                 .help("Provide a 32-byte secret key in hexadecimal format"),
         )
@@ -490,7 +487,7 @@ fn main() {
 
     println!("Sharing directory: {:?}", directory);
 
-    let mut secret_key = if let Some(hex_key) = matches.get_one::<String>("HEX") {
+    let mut secret_key = if let Some(hex_key) = matches.get_one::<String>("key") {
         if hex_key.len() != 64 {
             panic!("Secret key must be a 32-byte hexadecimal string (64 characters).");
         }
@@ -581,6 +578,11 @@ fn main() {
     };
 
     println!("Using config directory: {:?}", config_directory);
+
+    // if secret_key is Some, print it in hex format
+    if let Some(sk) = secret_key {
+        println!("Using secret key: {}", hex::encode(sk));
+    }
 
     new(directory.clone(), config_directory.clone(), secret_key);
 }
