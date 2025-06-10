@@ -27,62 +27,6 @@ a:hover {
     text-decoration: underline;
 }
 
-table {
-    width: 90%;
-    margin: 0 auto;
-    border-collapse: collapse;
-    background: #fff;
-    box-shadow: 0 2px 8px rgba(44, 62, 80, 0.08);
-    border-radius: 8px;
-    overflow: scroll;
-    table-layout: fixed;
-}
-
-th, td {
-    padding: 0.75rem 1.2rem;
-    text-align: left;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-th:first-child, td:first-child {
-    text-align: center;
-}
-
-th {
-    background: #e2e8f0;
-    font-weight: 600;
-    border-bottom: 2px solid #cbd5e1;
-}
-
-tr:nth-child(even) {
-    background: #f7fafc;
-}
-
-tr:hover {
-    background: #e6fffa;
-}
-
-td {
-    border-bottom: 1px solid #f1f5f9;
-}
-
-br {
-    line-height: 2;
-}
-
-@media (max-width: 700px) {
-    table, th, td {
-        font-size: 0.95rem;
-        padding: 0.5rem;
-    }
-
-    h1 {
-        font-size: 1.1rem;
-        padding: 0.8rem 1rem;
-    }
-}
 
 .button {
     display: inline-block;
@@ -158,4 +102,96 @@ br {
     color: #fff;
     box-shadow: 0 4px 12px rgba(44, 62, 80, 0.12);
     text-decoration: none;
+}
+
+
+table {
+    width: 100%;
+    margin: 0 auto;
+    border-collapse: collapse;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(44, 62, 80, 0.08);
+    border-radius: 8px;
+    table-layout: fixed;
+}
+
+th, td {
+    padding: 0.75rem 1.2rem;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+th:first-child, td:first-child {
+    text-align: center;
+}
+
+th {
+    background: #e2e8f0;
+    font-weight: 600;
+    border-bottom: 2px solid #cbd5e1;
+}
+
+tr:nth-child(even) {
+    background: #f7fafc;
+}
+
+tr:hover {
+    background: #e6fffa;
+}
+
+td {
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.table-container {
+    overflow-x: auto;
+    width: 100%;
+    max-width: 100%;
+}
+
+@media (max-width: 600px) {
+    table, th, td {
+        font-size: 0.95rem;
+        padding: 0.5rem;
+    }
+
+    h1 {
+        font-size: 1.1rem;
+        padding: 0.8rem 1rem;
+    }
+
+    th:nth-child(3), td:nth-child(3) {
+        display: none;
+    }
+}
+
+@media (max-width: 810px) {
+    th:nth-child(4), td:nth-child(4)  /* Modified */
+    {
+        display: none;
+    }
+}
+
+
+th:nth-child(1), td:nth-child(1) {
+    width: 35px; /* Fixed width for Type column */
+}
+
+th:nth-child(2), td:nth-child(2) {
+    min-width: 50px;
+    width: 100%; /* 100% minus sum of other column widths */
+}
+
+th:nth-child(3), td:nth-child(3) {
+    width: 120px; /* Fixed width for Size */
+}
+
+th:nth-child(4), td:nth-child(4) {
+    width: 180px; /* Fixed width for Modified */
+}
+
+th:nth-child(5), td:nth-child(5) {
+    width: 120px; /* Allow Path column to shrink last */
 }
