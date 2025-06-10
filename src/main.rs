@@ -499,6 +499,13 @@ fn main() {
                 .action(clap::ArgAction::Count)
                 .help("Increase verbosity level"),
         )
+        .arg(
+            Arg::new("css")
+                .short('s')
+                .long("css")
+                .value_name("FILE")
+                .help("Path to a custom CSS file for the index page, defaults to built-in style"),
+        )
         .get_matches();
 
     // Initialize logging based on verbosity level
