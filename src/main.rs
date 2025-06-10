@@ -492,8 +492,23 @@ fn main() {
                 .value_name("HEX")
                 .help("Provide a 32-byte secret key in hexadecimal format"),
         )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .action(clap::ArgAction::Count)
+                .help("Increase verbosity level"),
+        )
         .get_matches();
 
+    // Initialize logging based on verbosity level
+    let log_level = match matches.get_count("verbose") {
+        0 => log::LevelFilter::Error,
+        1 => log::LevelFilter::Info,
+        2 => log::LevelFilter::Debug,
+        _ => log::LevelFilter::Trace,
+    };
+    
     let current_directory = std::env::current_dir().unwrap();
 
     let directory = if let Some(dir) = matches.get_one::<String>("directory") {
