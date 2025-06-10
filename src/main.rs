@@ -508,7 +508,12 @@ fn main() {
         2 => log::LevelFilter::Debug,
         _ => log::LevelFilter::Trace,
     };
-    
+
+    env_logger::Builder::new()
+        .filter_level(log_level)
+        .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
+        .init();
+
     let current_directory = std::env::current_dir().unwrap();
 
     let directory = if let Some(dir) = matches.get_one::<String>("directory") {
