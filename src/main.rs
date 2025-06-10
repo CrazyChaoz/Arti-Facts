@@ -295,18 +295,29 @@ async fn service_function(
 
     // If path is a directory or root, list files
     if file_path.is_dir() || path.is_empty() {
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(&file_path)? {
-            let entry = entry?;
+        let mut entries_vec: Vec<_> = fs::read_dir(&file_path)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let entry_path = entry.path();
+                // Skip config_dir and its contents
+                !entry_path
+                    .canonicalize()
+                    .map(|p| p.starts_with(&config_directory))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        // Sort entries by file type and then file name (case-insensitive)
+        entries_vec.sort_by_key(|entry| {
             let entry_path = entry.path();
-            // Skip config_dir and its contents
-            if entry_path
-                .canonicalize()
-                .map(|p| p.starts_with(&config_directory))
-                .unwrap_or(false)
-            {
-                continue;
-            }
+            let file_type = !entry_path.is_dir();
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            (file_type, name)
+        });
+
+        let mut table_rows = Vec::new();
+        for entry in entries_vec {
+            let entry_path = entry.path();
             let name = entry.file_name().into_string().unwrap_or_default();
             let metadata = entry.metadata()?;
             let file_type = if entry_path.is_dir() { "📁" } else { "📄" };
@@ -333,7 +344,7 @@ async fn service_function(
                 })
                 .unwrap_or_else(|| "-".to_string());
 
-            entries.push(format!(
+            table_rows.push(format!(
                 "<tr><td>{}</td><td><a href=\"/{href}\">{}</a></td><td>{}</td><td>{}</td><td><a href=\"/{href}?download\" class=\"download-button\">⬇️</a></td></tr>",
                 file_type,
                 name,
@@ -361,7 +372,7 @@ async fn service_function(
         };
         let body = INDEX_TEMPLATE
             .replace("{0}", &path)
-            .replace("{1}", &entries.join(""))
+            .replace("{1}", &table_rows.join(""))
             .replace("{css}", DEFAULT_CSS)
             .replace("{parent_dir}", &go_back);
 
