@@ -458,7 +458,7 @@ pub fn get_onion_address(public_key: &[u8]) -> String {
 
 fn main() {
     let matches = Command::new("arti-facts")
-        .version("2.1.0")
+        .version("2.1.2")
         .about("A simple file sharing service over Tor onion services")
         .arg(
             Arg::new("directory")
