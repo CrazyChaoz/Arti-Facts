@@ -28,6 +28,7 @@ use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 use async_zip::{tokio::write::ZipFileWriter, Compression};
 
 const INDEX_TEMPLATE: &str = include_str!("index.html");
+const DEFAULT_CSS: &str = include_str!("default.css");
 
 fn new(
     data_directory: PathBuf,
@@ -361,6 +362,7 @@ async fn service_function(
         let body = INDEX_TEMPLATE
             .replace("{0}", &path)
             .replace("{1}", &entries.join(""))
+            .replace("{css}", DEFAULT_CSS)
             .replace("{parent_dir}", &go_back);
 
         return Ok(Response::builder()
