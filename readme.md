@@ -21,7 +21,7 @@ arti-facts is a command-line tool and webserver that lets you securely share fil
 - **Beautiful Directory Listing:** Clean, modern HTML index for browsing and downloading files.
 - **Instant ZIP Download:** Download entire folders as .zip archives with one click.
 - **Configurable:** Choose the data directory to share and a custom configuration directory.
-- 
+
 ## Building from Source (Optional)
 
 1. **Install Rust** (if you haven’t already):
