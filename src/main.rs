@@ -30,47 +30,6 @@ use async_zip::{tokio::write::ZipFileWriter, Compression};
 const INDEX_TEMPLATE: &str = include_str!("index.html");
 const DEFAULT_CSS: &str = include_str!("default.css");
 
-fn new(
-    data_directory: PathBuf,
-    config_directory: PathBuf,
-    onion_address_secret_key: Option<[u8; 32]>,
-    custom_css: Option<String>,
-) -> TorClient<PreferredRuntime> {
-    info!("Starting Tor client");
-
-    let rt = if let Ok(runtime) = PreferredRuntime::current() {
-        runtime
-    } else {
-        PreferredRuntime::create().expect("could not create async runtime")
-    };
-
-    let mut config = TorClientConfigBuilder::from_directories(
-        config_directory.join("arti-config"),
-        config_directory.join("arti-cache"),
-    );
-    config.address_filter().allow_onion_addrs(true);
-
-    let config = config.build().expect("error building tor config");
-
-    let binding = TorClient::with_runtime(rt.clone()).config(config);
-    let client_future = binding.create_bootstrapped();
-
-    rt.block_on(async {
-        let client = client_future.await.unwrap();
-
-        info!("Tor client started");
-
-        onion_service_from_sk(
-            client.clone(),
-            data_directory,
-            config_directory,
-            onion_address_secret_key,
-            custom_css,
-        )
-        .await;
-        client
-    })
-}
 
 fn keypair_from_sk(secret_key: [u8; 32]) -> ExpandedKeypair {
     let sk = secret_key as ed25519_dalek::SecretKey;
@@ -537,7 +496,7 @@ fn main() {
 
     let current_directory = std::env::current_dir().unwrap();
 
-    let directory = if let Some(dir) = matches.get_one::<String>("directory") {
+    let data_directory = if let Some(dir) = matches.get_one::<String>("directory") {
         info!("Working directory: {}", dir);
         std::path::Path::new(dir)
             .canonicalize()
@@ -550,7 +509,7 @@ fn main() {
         current_directory.clone()
     };
 
-    println!("Sharing directory: {:?}", directory);
+    println!("Sharing directory: {:?}", data_directory);
 
     let mut secret_key = if let Some(hex_key) = matches.get_one::<String>("key") {
         if hex_key.len() != 64 {
@@ -676,10 +635,37 @@ fn main() {
         None
     };
 
-    new(
-        directory.clone(),
-        config_directory.clone(),
-        secret_key,
-        custom_css,
+    info!("Starting Tor client");
+
+    let rt = if let Ok(runtime) = PreferredRuntime::current() {
+        runtime
+    } else {
+        PreferredRuntime::create().expect("could not create async runtime")
+    };
+
+    let mut config = TorClientConfigBuilder::from_directories(
+        config_directory.join("arti-config"),
+        config_directory.join("arti-cache"),
     );
+    config.address_filter().allow_onion_addrs(true);
+
+    let config = config.build().expect("error building tor config");
+
+    let binding = TorClient::with_runtime(rt.clone()).config(config);
+    let client_future = binding.create_bootstrapped();
+
+    rt.block_on(async {
+        let client = client_future.await.unwrap();
+
+        info!("Tor client started");
+
+        onion_service_from_sk(
+            client.clone(),
+            data_directory,
+            config_directory,
+            secret_key,
+            custom_css,
+        )
+            .await;
+    })
 }
