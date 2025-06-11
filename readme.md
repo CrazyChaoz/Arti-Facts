@@ -21,6 +21,10 @@ arti-facts is a command-line tool and webserver that lets you securely share fil
 - **Beautiful Directory Listing:** Clean, modern HTML index for browsing and downloading files.
 - **Instant ZIP Download:** Download entire folders as .zip archives with one click.
 - **Configurable:** Choose the data directory to share and a custom configuration directory.
+- **Visit Tracking:** Optional feature to track visitor statistics (disabled by default).
+- **Custom Styling:** Support for custom CSS to personalize the directory listing appearance.
+- **Persistent Addresses:** Option to use custom secret keys for persistent .onion addresses.
+- **Smart Config Management:** Automatic handling of multiple configuration directories.
 
 ## Building from Source (Optional)
 
@@ -45,6 +49,9 @@ arti-facts is a command-line tool and webserver that lets you securely share fil
 - `-d, --directory <DIR>`: Sets the working directory to share (default: current directory).
 - `-c, --config <FILE>`: Sets a custom config directory (default: `.arti-fact-config` in the current directory).
 - `-k, --key <HEX>`: Provide a 32-byte secret key in hexadecimal format (for persistent onion addresses).
+- `-v, --verbose`: Increase verbosity level (can be used multiple times).
+- `-s, --css <FILE>`: Path to a custom CSS file for the index page.
+- `-t, --tracking`: Enable visit tracking (saves visit counts in config directory).
 
 ## How It Works
 1. **Tor Client Initialization:** Starts a Tor client in the background.
