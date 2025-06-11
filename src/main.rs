@@ -1,10 +1,9 @@
-use clap::{Arg, Command};
-use futures::{AsyncWriteExt, TryStreamExt};
-use std::fs;
-
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::TorClient;
+use async_zip::{tokio::write::ZipFileWriter, Compression};
 use async_zip::{ZipEntryBuilder, ZipString};
+use clap::{Arg, Command};
+use futures::{AsyncWriteExt, TryStreamExt};
 use futures::{Stream, StreamExt};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
@@ -13,23 +12,21 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use lazy_static::lazy_static;
 use log::info;
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Mutex;
 use tokio_util::io::ReaderStream;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use tor_proto::stream::IncomingStreamRequest;
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
-
-use async_zip::{tokio::write::ZipFileWriter, Compression};
-use lazy_static::lazy_static;
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 lazy_static! {
@@ -39,20 +36,20 @@ lazy_static! {
 const INDEX_TEMPLATE: &str = include_str!("index.html");
 const DEFAULT_CSS: &str = include_str!("default.css");
 
-fn load_visit_log(config_directory: &PathBuf) {
+fn load_visit_log(config_directory: &Path) {
     let log_file = config_directory.join("visit_log.json");
-    if let Ok(content) = std::fs::read_to_string(&log_file) {
+    if let Ok(content) = fs::read_to_string(&log_file) {
         if let Ok(visits) = serde_json::from_str::<HashMap<String, Vec<String>>>(&content) {
             *VISIT_COUNTS.lock().unwrap() = visits;
         }
     }
 }
 
-fn save_visit_log(config_directory: &PathBuf) {
+fn save_visit_log(config_directory: &Path) {
     let log_file = config_directory.join("visit_log.json");
     let visits = VISIT_COUNTS.lock().unwrap();
     if let Ok(json) = serde_json::to_string(&*visits) {
-        let _ = std::fs::write(&log_file, json);
+        let _ = fs::write(&log_file, json);
     }
 }
 
@@ -239,13 +236,13 @@ async fn service_function(
         let session_id = get_or_create_session_id(&request);
 
         // Record visit
- let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
         {
             let mut visits = VISIT_COUNTS.lock().unwrap();
             visits
                 .entry(session_id.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(timestamp);
         }
 
@@ -254,7 +251,7 @@ async fn service_function(
 
         Response::builder().header(
             "Set-Cookie",
-            format!("session={}; Path=/; HttpOnly", session_id),
+            format!("session={session_id}; Path=/; HttpOnly"),
         )
     } else {
         Response::builder()
@@ -273,10 +270,7 @@ async fn service_function(
 
             let walker = walkdir::WalkDir::new(&file_path).follow_links(true);
             for entry in walker {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
+                let Ok(entry) = entry else { continue };
                 let path = entry.path();
 
                 // Skip config directory
@@ -332,7 +326,7 @@ async fn service_function(
     // If path is a directory or root, list files
     if file_path.is_dir() || path.is_empty() {
         let mut entries_vec: Vec<_> = fs::read_dir(&file_path)?
-            .filter_map(|entry| entry.ok())
+            .filter_map(Result::ok)
             .filter(|entry| {
                 let entry_path = entry.path();
                 // Skip config_dir and its contents
@@ -360,25 +354,21 @@ async fn service_function(
             let size = if entry_path.is_file() {
                 let len = metadata.len();
                 if len >= 1 << 30 {
-                    format!("{:.2} GiB", len as f64 / (1 << 30) as f64)
+                    format!("{:.2} GiB", len as f64 / f64::from(1 << 30))
                 } else if len >= 1 << 20 {
-                    format!("{:.2} MiB", len as f64 / (1 << 20) as f64)
+                    format!("{:.2} MiB", len as f64 / f64::from(1 << 20))
                 } else if len >= 1 << 10 {
-                    format!("{:.2} KiB", len as f64 / (1 << 10) as f64)
+                    format!("{:.2} KiB", len as f64 / f64::from(1 << 10))
                 } else {
-                    format!("{} bytes", len)
+                    format!("{len} bytes")
                 }
             } else {
                 String::from("-")
             };
-            let modified = metadata
-                .modified()
-                .ok()
-                .map(|m| {
-                    let datetime: chrono::DateTime<chrono::Local> = m.into();
-                    datetime.format("%H:%M | %Y-%m-%d").to_string()
-                })
-                .unwrap_or_else(|| "-".to_string());
+            let modified = metadata.modified().ok().map_or("-".to_string(), |m| {
+                let datetime: chrono::DateTime<chrono::Local> = m.into();
+                datetime.format("%H:%M | %Y-%m-%d").to_string()
+            });
 
             table_rows.push(format!(
                 "<tr><td>{}</td><td><a href=\"/{href}\">{}</a></td><td>{}</td><td>{}</td><td><a href=\"/{href}?download\" class=\"download-button\">⬇️</a></td></tr>",
@@ -387,9 +377,9 @@ async fn service_function(
                 size,
                 modified,
                 href = if path.is_empty() {
-                    format!("{}", name)
+                    name.clone()
                 } else {
-                    format!("{}/{}", path, name)
+                    format!("{path}/{name}")
                 }
             ));
         }
@@ -401,10 +391,7 @@ async fn service_function(
                 .and_then(|p| p.strip_prefix(&data_dir).ok())
                 .and_then(|p| p.to_str())
                 .unwrap_or("<span class=\"left\"></span>");
-            format!(
-                "<a href=\"/{}\" class=\"button left\">⬆️ Parent directory</a>",
-                parent
-            )
+            format!("<a href=\"/{parent}\" class=\"button left\">⬆️ Parent directory</a>")
         };
 
         let css = if let Some(css) = custom_css {
@@ -428,10 +415,10 @@ async fn service_function(
 
     // If path is a file, return its contents
     if file_path.is_file() {
-        let file = tokio::fs::File::open(&file_path).await.unwrap();
+        let file = tokio::fs::File::open(&file_path).await?;
 
         // Wrap to a tokio_util::io::ReaderStream
-        let reader_stream = tokio_util::io::ReaderStream::new(file);
+        let reader_stream = ReaderStream::new(file);
 
         // Convert to http_body_util::BoxBody
         let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
@@ -447,7 +434,7 @@ async fn service_function(
         if request.uri().query() == Some("download") {
             response_builder = response_builder.header(
                 "Content-Disposition",
-                format!("attachment; filename=\"{}\"", file_name),
+                format!("attachment; filename=\"{file_name}\""),
             );
         }
 
@@ -510,8 +497,8 @@ pub fn get_onion_address(public_key: &[u8]) -> String {
     base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &buf).to_ascii_lowercase()
 }
 
-fn main() {
-    let matches = Command::new("arti-facts")
+fn cli_args() -> clap::ArgMatches {
+    Command::new("arti-facts")
         .version(env!("CARGO_PKG_VERSION"))
         .about("A simple file sharing service over Tor onion services")
         .arg(
@@ -556,7 +543,11 @@ fn main() {
                 .action(clap::ArgAction::SetTrue)
                 .help("Enable visit tracking (saves visit counts in config directory)"),
         )
-        .get_matches();
+        .get_matches()
+}
+
+fn main() {
+    let matches = cli_args();
 
     // Initialize logging based on verbosity level
     let log_level = match matches.get_count("verbose") {
@@ -574,24 +565,24 @@ fn main() {
     let current_directory = std::env::current_dir().unwrap();
 
     let data_directory = if let Some(dir) = matches.get_one::<String>("directory") {
-        info!("Working directory: {}", dir);
-        std::path::Path::new(dir)
-            .canonicalize()
-            .unwrap_or_else(|_| {
-                info!("Invalid directory specified, using current directory instead.");
-                current_directory.clone()
-            })
+        info!("Working directory: {dir}");
+        Path::new(dir).canonicalize().unwrap_or_else(|_| {
+            info!("Invalid directory specified, using current directory instead.");
+            current_directory.clone()
+        })
     } else {
         info!("No directory specified, using default.");
         current_directory.clone()
     };
 
-    println!("Sharing directory: {:?}", data_directory);
+    println!("Sharing directory: {data_directory:?}");
 
     let mut secret_key = if let Some(hex_key) = matches.get_one::<String>("key") {
-        if hex_key.len() != 64 {
-            panic!("Secret key must be a 32-byte hexadecimal string (64 characters).");
-        }
+        assert_eq!(
+            hex_key.len(),
+            64,
+            "Secret key must be a 32-byte hexadecimal string (64 characters)."
+        );
         let mut sk = [0u8; 32];
         hex::decode_to_slice(hex_key, &mut sk).expect("Invalid hex string for secret key");
         Some(sk)
@@ -600,7 +591,7 @@ fn main() {
     };
 
     let config_directory = if let Some(cfg) = matches.get_one::<String>("config") {
-        let config_path = std::path::Path::new(cfg);
+        let config_path = Path::new(cfg);
         if config_path.exists() && config_path.is_dir() {
             config_path.canonicalize().unwrap()
         } else {
@@ -624,7 +615,7 @@ fn main() {
                 .verifying_key()
                 .to_bytes(),
         );
-        let dir_name = format!(".arti-fact-config-{}", onion_addr);
+        let dir_name = format!(".arti-fact-config-{onion_addr}");
         let dir_path = config_directory.join(dir_name.clone()).clone();
         if !dir_path.exists() {
             fs::create_dir_all(&dir_path).expect("Failed to create config directory");
@@ -634,7 +625,7 @@ fn main() {
         // Find all dirs starting with .arti-fact-config
         let mut config_dirs: Vec<_> = fs::read_dir(config_directory.clone())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
             .filter(|e| {
                 e.file_name()
@@ -652,7 +643,7 @@ fn main() {
                         .verifying_key()
                         .to_bytes(),
                 );
-                let dir_name = format!(".arti-fact-config-{}", onion_addr);
+                let dir_name = format!(".arti-fact-config-{onion_addr}");
                 let dir_path = config_directory.join(dir_name).clone();
                 fs::create_dir_all(&dir_path).expect("Failed to create config directory");
                 dir_path.canonicalize().unwrap()
@@ -677,7 +668,7 @@ fn main() {
                             .verifying_key()
                             .to_bytes(),
                     );
-                    let dir_name = format!(".arti-fact-config-{}", onion_addr);
+                    let dir_name = format!(".arti-fact-config-{onion_addr}");
                     let dir_path = config_directory.join(dir_name).clone();
                     fs::create_dir_all(&dir_path).expect("Failed to create config directory");
                     dir_path.canonicalize().unwrap()
@@ -693,7 +684,7 @@ fn main() {
         }
     };
 
-    println!("Using config directory: {:?}", config_directory);
+    println!("Using config directory: {config_directory:?}");
 
     // if secret_key is Some, print it in hex format
     if let Some(sk) = secret_key {
@@ -703,10 +694,10 @@ fn main() {
     let custom_css = if let Some(css_file) = matches.get_one::<String>("css") {
         let css_path = PathBuf::from(css_file);
         if css_path.exists() && css_path.is_file() {
-            println!("Using custom CSS from: {}", css_file);
+            println!("Using custom CSS from: {css_file}");
             Some(fs::read_to_string(css_path).expect("Failed to read CSS file"))
         } else {
-            panic!("CSS file does not exist or is not a file: {}", css_file);
+            panic!("CSS file does not exist or is not a file: {css_file}");
         }
     } else {
         None
@@ -754,5 +745,5 @@ fn main() {
             visitor_tracking,
         )
         .await;
-    })
+    });
 }
