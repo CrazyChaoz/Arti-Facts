@@ -26,10 +26,49 @@ use tor_proto::stream::IncomingStreamRequest;
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 
 use async_zip::{tokio::write::ZipFileWriter, Compression};
+use lazy_static::lazy_static;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
+
+lazy_static! {
+    static ref VISIT_COUNTS: Mutex<HashMap<String, Vec<String>>> = Mutex::new(HashMap::new());
+}
 
 const INDEX_TEMPLATE: &str = include_str!("index.html");
 const DEFAULT_CSS: &str = include_str!("default.css");
 
+fn load_visit_log(config_directory: &PathBuf) {
+    let log_file = config_directory.join("visit_log.json");
+    if let Ok(content) = std::fs::read_to_string(&log_file) {
+        if let Ok(visits) = serde_json::from_str::<HashMap<String, Vec<String>>>(&content) {
+            *VISIT_COUNTS.lock().unwrap() = visits;
+        }
+    }
+}
+
+fn save_visit_log(config_directory: &PathBuf) {
+    let log_file = config_directory.join("visit_log.json");
+    let visits = VISIT_COUNTS.lock().unwrap();
+    if let Ok(json) = serde_json::to_string(&*visits) {
+        let _ = std::fs::write(&log_file, json);
+    }
+}
+
+fn get_or_create_session_id(request: &Request<Incoming>) -> String {
+    for header in request.headers().get_all("cookie") {
+        if let Ok(cookie_str) = header.to_str() {
+            for cookie in cookie_str.split(';') {
+                let cookie = cookie.trim();
+                if let Some(session_id) = cookie.strip_prefix("session=") {
+                    return session_id.to_string();
+                }
+            }
+        }
+    }
+    Uuid::new_v4().to_string()
+}
 
 fn keypair_from_sk(secret_key: [u8; 32]) -> ExpandedKeypair {
     let sk = secret_key as ed25519_dalek::SecretKey;
@@ -46,6 +85,7 @@ async fn onion_service_from_sk(
     config_directory: PathBuf,
     secret_key: Option<[u8; 32]>,
     custom_css: Option<String>,
+    visitor_tracking: bool,
 ) {
     let nickname = "arti-facts-service";
 
@@ -118,6 +158,7 @@ async fn onion_service_from_sk(
                                 data_directory.clone(),
                                 config_directory.clone(),
                                 custom_css.clone(),
+                                visitor_tracking,
                             )
                         }),
                     )
@@ -136,34 +177,53 @@ async fn onion_service_from_sk(
 }
 
 /// Handles an HTTP request by serving files or directory listings from the specified data directory,
-/// while restricting access to the configuration directory.
+/// while restricting access to the configuration directory and supporting ZIP downloads.
 ///
 /// # Arguments
 ///
 /// * `request` - The incoming HTTP request.
 /// * `data_dir` - The base directory from which files and directories are served.
 /// * `config_directory` - The directory containing configuration files, which must not be accessible.
+/// * `custom_css` - Optional custom CSS for the index page.
+/// * `visitor_tracking` - Whether to enable visit tracking.
 ///
 /// # Returns
 ///
-/// Returns a `Result` containing either a `Response<String>` with the requested file contents or directory listing,
-/// or an error if access is forbidden or the resource is not found.
+/// Returns a `Result` containing either a `Response<BoxBody<Bytes, std::io::Error>>` with the requested file contents,
+/// directory listing, or ZIP archive, or an error if access is forbidden or the resource is not found.
 ///
 /// # Behavior
 ///
 /// - Prevents access to files outside `data_dir` or within `config_directory`.
 /// - If the requested path is a directory or root, returns an HTML index of its contents.
-/// - If the requested path is a file, returns its contents.
-/// - Returns 403 Forbidden if access to the config directory is attempted.
+/// - If the requested path is a file, streams its contents.
+/// - If the `?download` query is present on a directory, streams a ZIP archive of its contents.
 /// - Returns 404 Not Found if the file or directory does not exist.
 async fn service_function(
     request: Request<Incoming>,
     data_dir: PathBuf,
     config_directory: PathBuf,
     custom_css: Option<String>,
+    visitor_tracking: bool,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>, std::io::Error> {
     let path = request.uri().path().trim_start_matches('/').to_string();
     let mut file_path = data_dir.join(&path);
+
+    // Prevent access to config_directory or its subdirectories
+    let config_directory = config_directory.canonicalize()?;
+    file_path = if file_path
+        .canonicalize()
+        .map(|p| p.starts_with(&config_directory))
+        .unwrap_or(false)
+    {
+        // If the requested path is within the config directory, try one directory above the config directory
+        config_directory
+            .parent()
+            .unwrap_or(&config_directory)
+            .to_path_buf()
+    } else {
+        file_path
+    };
 
     // Prevent access to any file outside of data_dir or to config_directory
     let data_dir_canon = data_dir.canonicalize()?;
@@ -174,22 +234,32 @@ async fn service_function(
         file_path = data_dir_canon;
     }
 
-    // Prevent access to config_directory or its subdirectories
-    let config_directory = config_directory.canonicalize()?;
-    if file_path
-        .canonicalize()
-        .map(|p| p.starts_with(&config_directory))
-        .unwrap_or(false)
-    {
-        return Ok(Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(
-                Full::new("Access to config directory is forbidden".as_bytes().into())
-                    .map_err(|e| match e {})
-                    .boxed(),
-            )
-            .unwrap());
-    }
+    let response = if visitor_tracking {
+        // Get or create session ID
+        let session_id = get_or_create_session_id(&request);
+
+        // Record visit
+ let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        {
+            let mut visits = VISIT_COUNTS.lock().unwrap();
+            visits
+                .entry(session_id.clone())
+                .or_insert_with(Vec::new)
+                .push(timestamp);
+        }
+
+        // Save visit log
+        save_visit_log(&config_directory);
+
+        Response::builder().header(
+            "Set-Cookie",
+            format!("session={}; Path=/; HttpOnly", session_id),
+        )
+    } else {
+        Response::builder()
+    };
+
     if request.uri().query() == Some("download") && file_path.is_dir() {
         // Create a pipe with large buffer
         let (mut writer, reader) = tokio::io::duplex(64 * 1024);
@@ -248,7 +318,7 @@ async fn service_function(
         let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data));
         let boxed_body = BodyExt::boxed(stream_body);
 
-        return Ok(Response::builder()
+        return Ok(response
             .status(StatusCode::OK)
             .header("Content-Type", "application/zip")
             .header(
@@ -336,7 +406,7 @@ async fn service_function(
                 parent
             )
         };
-        
+
         let css = if let Some(css) = custom_css {
             css
         } else {
@@ -349,7 +419,7 @@ async fn service_function(
             .replace("{css_structure}", &css)
             .replace("{parent_dir}", &go_back);
 
-        return Ok(Response::builder()
+        return Ok(response
             .status(StatusCode::OK)
             .header("Content-Type", "text/html; charset=utf-8")
             .body(Full::<Bytes>::from(body).map_err(|e| match e {}).boxed())
@@ -372,7 +442,7 @@ async fn service_function(
             .and_then(|n| n.to_str())
             .unwrap_or("download");
 
-        let mut response_builder = Response::builder().status(StatusCode::OK);
+        let mut response_builder = response.status(StatusCode::OK);
 
         if request.uri().query() == Some("download") {
             response_builder = response_builder.header(
@@ -386,7 +456,7 @@ async fn service_function(
     }
 
     // Not found
-    Ok(Response::builder()
+    Ok(response
         .status(StatusCode::NOT_FOUND)
         .body(
             Full::<Bytes>::from("File or directory not found")
@@ -478,6 +548,13 @@ fn main() {
                 .long("css")
                 .value_name("FILE")
                 .help("Path to a custom CSS file for the index page, defaults to built-in style"),
+        )
+        .arg(
+            Arg::new("tracking")
+                .short('t')
+                .long("tracking")
+                .action(clap::ArgAction::SetTrue)
+                .help("Enable visit tracking (saves visit counts in config directory)"),
         )
         .get_matches();
 
@@ -635,6 +712,15 @@ fn main() {
         None
     };
 
+    let visitor_tracking = if matches.get_flag("tracking") {
+        info!("Visit tracking enabled, saving visit counts in config directory");
+        load_visit_log(&config_directory);
+        true
+    } else {
+        info!("Visit tracking disabled");
+        false
+    };
+
     info!("Starting Tor client");
 
     let rt = if let Ok(runtime) = PreferredRuntime::current() {
@@ -665,7 +751,8 @@ fn main() {
             config_directory,
             secret_key,
             custom_css,
+            visitor_tracking,
         )
-            .await;
+        .await;
     })
 }
