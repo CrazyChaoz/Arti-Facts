@@ -373,7 +373,7 @@ async fn service_function(
         let body = INDEX_TEMPLATE
             .replace("{0}", &path)
             .replace("{1}", &table_rows.join(""))
-            .replace("{css}", DEFAULT_CSS)
+            .replace("{css_structure}", DEFAULT_CSS)
             .replace("{parent_dir}", &go_back);
 
         return Ok(Response::builder()

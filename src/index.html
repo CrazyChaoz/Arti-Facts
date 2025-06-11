@@ -2,12 +2,12 @@
 <html>
 <head><title>Index of /{0}</title>
     <style>
-        {css}
+        {css_structure}
     </style>
 </head>
-<body><h1>Index of /{0}</h1>
+<body>
+<h1>Index of /{0}</h1>
 <div class="button-bar">
-    <!-- Parent directory button, only show if not at root -->
     {parent_dir}
     <a href="/{0}?download" class="button right">📦 Download .zip</a>
 </div>
@@ -22,6 +22,10 @@
     </tr>
     {1}
 </table>
+</div>
+
+<div class="footer">
+    Served with ❤️ using <b>arti-facts</b> &mdash; <a href="https://github.com/CrazyChaoz/Arti-Facts" target="_blank">GitHub Repo</a>
 </div>
 </body>
 </html>
