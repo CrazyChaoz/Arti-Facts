@@ -13,7 +13,7 @@ h1 {
     padding: 1.2rem 2rem;
     font-size: 1.5rem;
     letter-spacing: 1px;
-    border-bottom: 2px solid #4fd1c5;
+    border-bottom: 2px solid #3182ce;
 }
 
 a {
@@ -73,12 +73,12 @@ a:hover {
 .button-bar .right {
     justify-self: end;
 
-    background: #6ab238;
+    background: #38a169;
     color: #fff;
 }
 
 .button-bar .right:hover {
-    background: #558c2f;
+    background: #2f855a;
     color: #fff;
 }
 
@@ -98,7 +98,7 @@ a:hover {
 }
 
 .download-button:hover {
-    background: #276749;
+    background: #2f855a;
     color: #fff;
     box-shadow: 0 4px 12px rgba(44, 62, 80, 0.12);
     text-decoration: none;
@@ -138,7 +138,7 @@ tr:nth-child(even) {
 }
 
 tr:hover {
-    background: #e6fffa;
+    background: #ebf8ff;
 }
 
 td {
