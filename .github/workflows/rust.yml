@@ -1,13 +1,12 @@
 name: Rust
 
 on:
-  release:
-    types:
-      - created
+  push:
+    tags:
+      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
-
 
 permissions:
   contents: write
@@ -21,7 +20,6 @@ permissions:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:    
@@ -38,11 +36,15 @@ jobs:
       run: cargo build --release --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
 
     - name: Copy files in target to root
-      run: cp target/x86_64-pc-windows-gnu/release/arti-facts.exe arti-facts.exe && cp target/x86_64-unknown-linux-musl/release/arti-facts arti-facts
+      run: cp target/x86_64-pc-windows-gnu/release/arti-facts.exe arti-facts-windows.exe && cp target/x86_64-unknown-linux-musl/release/arti-facts arti-facts-linux
 
-    - name: Upload release binaries
-      uses: alexellis/upload-assets@0.4.1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
       with:
-        asset_paths: '["arti-facts.exe", "arti-facts"]'
+        files: |
+          arti-facts-windows.exe
+          arti-facts-linux
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -34,6 +34,7 @@ fn new(
     data_directory: PathBuf,
     config_directory: PathBuf,
     onion_address_secret_key: Option<[u8; 32]>,
+    custom_css: Option<String>,
 ) -> TorClient<PreferredRuntime> {
     info!("Starting Tor client");
 
@@ -64,6 +65,7 @@ fn new(
             data_directory,
             config_directory,
             onion_address_secret_key,
+            custom_css,
         )
         .await;
         client
@@ -84,6 +86,7 @@ async fn onion_service_from_sk(
     data_directory: PathBuf,
     config_directory: PathBuf,
     secret_key: Option<[u8; 32]>,
+    custom_css: Option<String>,
 ) {
     let nickname = "arti-facts-service";
 
@@ -147,13 +150,16 @@ async fn onion_service_from_sk(
                     stream_request.accept(Connected::new_empty()).await.unwrap();
                 let io = TokioIo::new(onion_service_stream);
 
-                let data_dir = data_directory.clone();
-
                 http1::Builder::new()
                     .serve_connection(
                         io,
                         service_fn(|request| {
-                            service_function(request, data_dir.clone(), config_directory.clone())
+                            service_function(
+                                request,
+                                data_directory.clone(),
+                                config_directory.clone(),
+                                custom_css.clone(),
+                            )
                         }),
                     )
                     .await
@@ -195,6 +201,7 @@ async fn service_function(
     request: Request<Incoming>,
     data_dir: PathBuf,
     config_directory: PathBuf,
+    custom_css: Option<String>,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>, std::io::Error> {
     let path = request.uri().path().trim_start_matches('/').to_string();
     let mut file_path = data_dir.join(&path);
@@ -370,10 +377,17 @@ async fn service_function(
                 parent
             )
         };
+        
+        let css = if let Some(css) = custom_css {
+            css
+        } else {
+            DEFAULT_CSS.to_string()
+        };
+
         let body = INDEX_TEMPLATE
             .replace("{0}", &path)
             .replace("{1}", &table_rows.join(""))
-            .replace("{css_structure}", DEFAULT_CSS)
+            .replace("{css_structure}", &css)
             .replace("{parent_dir}", &go_back);
 
         return Ok(Response::builder()
@@ -650,5 +664,22 @@ fn main() {
         println!("Using secret key: {}", hex::encode(sk));
     }
 
-    new(directory.clone(), config_directory.clone(), secret_key);
+    let custom_css = if let Some(css_file) = matches.get_one::<String>("css") {
+        let css_path = PathBuf::from(css_file);
+        if css_path.exists() && css_path.is_file() {
+            println!("Using custom CSS from: {}", css_file);
+            Some(fs::read_to_string(css_path).expect("Failed to read CSS file"))
+        } else {
+            panic!("CSS file does not exist or is not a file: {}", css_file);
+        }
+    } else {
+        None
+    };
+
+    new(
+        directory.clone(),
+        config_directory.clone(),
+        secret_key,
+        custom_css,
+    );
 }
