@@ -62,7 +62,7 @@ arti-facts is a command-line tool and webserver that lets you securely share fil
 ## Example
 
 ```sh
-arti-facts --directory /path/to/share --config /path/to/config
+arti-facts
 ```
 
 After running, arti-facts will print the onion address. You (or others) can access the shared files using Tor Browser or a compatible client by visiting:
