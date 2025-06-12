@@ -3,6 +3,7 @@ use arti_client::TorClient;
 use async_zip::{tokio::write::ZipFileWriter, Compression};
 use async_zip::{ZipEntryBuilder, ZipString};
 use clap::{Arg, Command};
+use futures::task::SpawnExt;
 use futures::{AsyncWriteExt, TryStreamExt};
 use futures::{Stream, StreamExt};
 use http_body_util::combinators::BoxBody;
@@ -10,7 +11,7 @@ use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Bytes, Frame, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use lazy_static::lazy_static;
 use log::info;
@@ -20,7 +21,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio_util::io::ReaderStream;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
@@ -133,44 +134,46 @@ async fn onion_service_from_sk(
     );
     info!("onion service status: {:?}", onion_service.status());
 
-    let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
+    let _ = tor_client.clone().runtime().spawn(async move {
+        let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
 
-    tokio::pin!(accepted_streams);
+        tokio::pin!(accepted_streams);
 
-    while let Some(stream_request) = accepted_streams.next().await {
-        info!("new incoming stream");
-        let request = stream_request.request().clone();
-        match request {
-            IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-                let onion_service_stream =
-                    stream_request.accept(Connected::new_empty()).await.unwrap();
-                let io = TokioIo::new(onion_service_stream);
+        while let Some(stream_request) = accepted_streams.next().await {
+            info!("new incoming stream");
+            let request = stream_request.request().clone();
+            match request {
+                IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
+                    let onion_service_stream =
+                        stream_request.accept(Connected::new_empty()).await.unwrap();
+                    let io = TokioIo::new(onion_service_stream);
 
-                http1::Builder::new()
-                    .serve_connection(
-                        io,
-                        service_fn(|request| {
-                            service_function(
-                                request,
-                                data_directory.clone(),
-                                config_directory.clone(),
-                                custom_css.clone(),
-                                visitor_tracking,
-                            )
-                        }),
-                    )
-                    .await
-                    .unwrap_or_else(|_| {
-                        info!("error serving connection");
-                    });
-            }
-            _ => {
-                stream_request.shutdown_circuit().unwrap();
-            }
-        };
-    }
-    drop(onion_service);
-    info!("onion service dropped");
+                    http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|request| {
+                                service_function(
+                                    request,
+                                    data_directory.clone(),
+                                    config_directory.clone(),
+                                    custom_css.clone(),
+                                    visitor_tracking,
+                                )
+                            }),
+                        )
+                        .await
+                        .unwrap_or_else(|_| {
+                            info!("error serving connection");
+                        });
+                }
+                _ => {
+                    stream_request.shutdown_circuit().unwrap();
+                }
+            };
+        }
+        drop(onion_service);
+        info!("onion service dropped");
+    });
 }
 
 /// Handles an HTTP request by serving files or directory listings from the specified data directory,
@@ -497,6 +500,124 @@ pub fn get_onion_address(public_key: &[u8]) -> String {
     base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &buf).to_ascii_lowercase()
 }
 
+async fn run_managed_service(
+    client: TorClient<PreferredRuntime>,
+    config_directory: PathBuf,
+    custom_css: Option<String>,
+    visitor_tracking: bool,
+) {
+    // Run a simple HTTP server for management page
+    let mgmt_addr = "127.0.0.1:8080";
+    println!("Management page available at http://{}/", mgmt_addr);
+
+    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<[u8; 32], String>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let mgmt_service = service_fn(move |req: Request<Incoming>| {
+        let value = secret_keys_to_directory_mapping.clone();
+        let client = client.clone();
+        let method = req.method().clone();
+        let uri = req.uri().clone();
+        let config_directory = config_directory.clone();
+
+        info!("Incoming request: {req:?}");
+        
+        async {
+            let body = String::from_utf8(
+                req.into_body()
+                    .collect()
+                    .await
+                    .expect("Error while awaiting incoming request")
+                    .to_bytes()
+                    .into(),
+            )
+            .expect("Failed to parse body as UTF-8");
+            info!("Request body: {body:?}");
+            async move {
+                match (method, uri.path()) {
+                    (Method::POST, "/add-onion-service") => {
+                        let params: HashMap<_, _> = form_urlencoded::parse(body.as_bytes())
+                            .into_owned()
+                            .collect();
+                        
+                        info!("Adding onion service: {params:?}");
+
+                        if let (Some(secret_key), Some(share_dir)) = (params.get("secret_key"), params.get("share_dir")) {
+                            let mut sk = [0u8; 32];
+                            if hex::decode_to_slice(secret_key, &mut sk).is_ok() {
+                                let share_dir = PathBuf::from(share_dir);
+                                if share_dir.exists() && share_dir.is_dir() {
+                                    value.lock().unwrap().insert(sk, share_dir.to_string_lossy().into_owned());
+
+                                    let config_dir = config_directory.clone();
+                                    tokio::spawn(async move {
+                                        onion_service_from_sk(
+                                            client,
+                                            share_dir,
+                                            config_dir,
+                                            Some(sk),
+                                            None,
+                                            false,
+                                        ).await;
+                                    });
+
+                                    return Ok(Response::builder()
+                                        .status(StatusCode::OK)
+                                        .body(Full::<Bytes>::from("").boxed())
+                                        .unwrap());
+                                }
+                            }
+                        }
+
+                        Ok(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(Full::<Bytes>::from("Invalid form data").boxed())
+                            .unwrap())
+                    }
+                    (Method::GET, "/generate-random-key") => {
+                        let random_key = generate_key();
+                        let hex_key = hex::encode(random_key);
+                        Ok(Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Full::<Bytes>::from(hex_key).boxed())
+                            .unwrap())
+                    }
+                    _ => {
+                        let html = include_str!("management_page.html").replace("{existing_onion_services}",
+                                                                                &*value.clone().lock().unwrap()
+                                                                                    .iter()
+                                                                                    .map(|(sk, dir)| {
+                                                                                        format!(
+                                                                                            "<tr><td class=\"onion\">{}</td><td class=\"dir\">{}</td><td><button onclick=\"deleteOnionService('{}')\" class=\"delete-button\">🗑️</button></td></tr>",
+                                                                                            get_onion_address(keypair_from_sk(*sk).public().as_bytes()),
+                                                                                            dir,
+                                                                                            hex::encode(sk)
+                                                                                        )
+                                                                                    })
+                                                                                    .collect::<Vec<_>>()
+                                                                                    .join("\n"),
+                        );
+                        Ok::<_, std::io::Error>(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "text/html; charset=utf-8")
+                                .body(Full::<Bytes>::from(html).map_err(|e| match e {}).boxed())
+                                .unwrap()
+                        )
+                    }
+                }
+            }.await
+        }
+    });
+
+    let listener = tokio::net::TcpListener::bind(mgmt_addr).await.unwrap();
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let io = TokioIo::new(stream);
+        tokio::spawn(http1::Builder::new().serve_connection(io, mgmt_service.clone()));
+    }
+}
+
 fn cli_args() -> clap::ArgMatches {
     Command::new("arti-facts")
         .version(env!("CARGO_PKG_VERSION"))
@@ -542,7 +663,12 @@ fn cli_args() -> clap::ArgMatches {
                 .long("tracking")
                 .action(clap::ArgAction::SetTrue)
                 .help("Enable visit tracking (saves visit counts in config directory)"),
-        )
+        ).arg(
+        Arg::new("managed")
+            .long("managed")
+            .action(clap::ArgAction::SetTrue)
+            .help("Run the service in managed mode, where it serves a static HTML page with management page to manage shared folders and its onion address"),
+    )
         .get_matches()
 }
 
@@ -736,14 +862,25 @@ fn main() {
 
         info!("Tor client started");
 
-        onion_service_from_sk(
-            client.clone(),
-            data_directory,
-            config_directory,
-            secret_key,
-            custom_css,
-            visitor_tracking,
-        )
-        .await;
+        if matches.get_flag("managed") {
+            run_managed_service(
+                client.clone(),
+                config_directory,
+                custom_css,
+                visitor_tracking,
+            )
+            .await;
+        } else {
+            onion_service_from_sk(
+                client.clone(),
+                data_directory,
+                config_directory,
+                secret_key,
+                custom_css,
+                visitor_tracking,
+            )
+            .await;
+            loop {}
+        }
     });
 }

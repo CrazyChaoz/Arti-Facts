@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "arti-facts"
-version = "2.4.1"
+version = "2.5.0"
 dependencies = [
  "arti-client",
  "async_zip",
@@ -229,6 +229,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "env_logger",
+ "form_urlencoded",
  "futures",
  "hex",
  "http-body-util",

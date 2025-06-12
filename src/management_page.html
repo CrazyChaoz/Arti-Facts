@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Arti-Facts Management</title>
+    <style>
+        body {
+        {
+            font-family: sans-serif;
+            margin: 2em;
+        }
+        }
+
+        .info {
+        {
+            margin-bottom: 1em;
+        }
+        }
+
+        .onion {
+        {
+            font-weight: bold;
+            color: #4a0;
+        }
+        }
+
+        .dir {
+        {
+            font-family: monospace;
+            color: #06c;
+        }
+        }
+    </style>
+</head>
+<body>
+<script>
+    function requestRandomKey() {
+        fetch('/generate-random-key')
+            .then(response => response.text())
+            .then(key => {
+                document.getElementById('secret_key').value = key;
+            })
+            .catch(error => {
+                console.error('Error generating random key:', error);
+                alert('Failed to generate random key.');
+            });
+    }
+
+    function handleFormSubmit(event) {
+        event.preventDefault();
+        const form = document.getElementById('add-onion-service');
+        const formData = new FormData(form);
+
+        const urlEncodedData = new URLSearchParams();
+        formData.forEach((value, key) => {
+            urlEncodedData.append(key, value);
+        });
+
+        fetch('/add-onion-service', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: urlEncodedData.toString()
+        })
+            .then(response => {
+                if (response.ok) {
+                    alert('Onion service added successfully!');
+                    window.location.reload();
+                } else {
+                    alert('Failed to add onion service.');
+                }
+            })
+            .catch(error => {
+                console.error('Error adding onion service:', error);
+                alert('An error occurred while adding the onion service.');
+            });
+    }
+</script>
+<h1>Arti-Facts Management</h1>
+<table border="1" cellpadding="5" cellspacing="0">
+    <thead>
+    <tr>
+        <th>Onion Address</th>
+        <th>Shared Directory</th>
+        <th>Delete</th>
+    </tr>
+    </thead>
+    <tbody id="onion-services-table">
+    {existing_onion_services}
+    </tbody>
+</table>
+
+<h2>Add Onion Service</h2>
+
+<form id="add-onion-service" autocomplete="off" method="POST" onsubmit="handleFormSubmit(event);">
+    <label for="secret_key">Secret Key (hex):</label>
+    <br>
+    <input type="text" id="secret_key" name="secret_key" size="64" required>
+    <button type="button" onclick="requestRandomKey()">Generate Random Key</button>
+    <br><br>
+    <label for="share_dir">Directory to Share:</label>
+    <br>
+    <input type="text" id="share_dir" name="share_dir" size="40" required>
+    <br><br>
+    <button type="submit">Add Onion Service</button>
+</form>
+</body>
+</html>
