@@ -22,7 +22,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use tokio_util::io::ReaderStream;
+use tokio_util::sync::CancellationToken;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_hsservice::RunningOnionService;
@@ -33,7 +35,7 @@ use uuid::Uuid;
 
 lazy_static! {
     static ref VISIT_COUNTS: Mutex<HashMap<String, Vec<String>>> = Mutex::new(HashMap::new());
-    static ref RUNNING_ONION_SERVICES: Arc<Mutex<HashMap<String, Arc<RunningOnionService>>>> =
+    static ref RUNNING_ONION_SERVICES: Arc<Mutex<HashMap<String, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
 
@@ -104,7 +106,7 @@ async fn onion_service_from_sk(
 
     let (onion_service, request_stream): (
         _,
-        Pin<Box<dyn Stream<Item=tor_hsservice::RendRequest> + Send>>,
+        Pin<Box<dyn Stream<Item = tor_hsservice::RendRequest> + Send>>,
     ) = if secret_key.is_none() {
         // We are trying to reuse an old instance
         let (service, stream) = tor_client
@@ -133,7 +135,9 @@ async fn onion_service_from_sk(
 
     info!("onion service status: {:?}", onion_service.status());
     let clone_onion_service = onion_service.clone();
-    let _ = tor_client.clone().runtime().spawn(async move {
+
+    let cancel_token = CancellationToken::new();
+    tor_client.clone().runtime().spawn(async move {
         while let Some(status_event) = clone_onion_service.status_events().next().await {
             if status_event.state().is_fully_reachable() {
                 break;
@@ -145,50 +149,68 @@ async fn onion_service_from_sk(
         );
         info!("onion service status: {:?}", clone_onion_service.status());
 
-        let clone_running_onion_services = RUNNING_ONION_SERVICES.clone();
 
-        clone_running_onion_services
-            .lock()
-            .unwrap().insert(onion_service.clone().onion_address().unwrap().to_string().trim_end_matches(".onion").into(), onion_service);
+        
+        drop(clone_onion_service)
     });
 
+    tor_client.clone().runtime().spawn(async move {
 
-    let _ = tor_client.clone().runtime().spawn(async move {
+        let clone_running_onion_services = RUNNING_ONION_SERVICES.clone();
+        clone_running_onion_services.lock().unwrap().insert(
+            onion_service
+                .clone()
+                .onion_address()
+                .unwrap()
+                .to_string()
+                .trim_end_matches(".onion")
+                .into(),
+            cancel_token.clone(),
+        );
+        
         let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
 
         tokio::pin!(accepted_streams);
 
-        while let Some(stream_request) = accepted_streams.next().await {
-            info!("new incoming stream");
-            let request = stream_request.request().clone();
-            match request {
-                IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-                    let onion_service_stream =
-                        stream_request.accept(Connected::new_empty()).await.unwrap();
-                    let io = TokioIo::new(onion_service_stream);
+        loop {
+            tokio::select! {
+            Some(stream_request) = accepted_streams.next() => {
+                    info!("new incoming stream");
+                    let request = stream_request.request().clone();
+                    match request {
+                        IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
+                            let onion_service_stream =
+                                stream_request.accept(Connected::new_empty()).await.unwrap();
+                            let io = TokioIo::new(onion_service_stream);
 
-                    http1::Builder::new()
-                        .serve_connection(
-                            io,
-                            service_fn(|request| {
-                                service_function(
-                                    request,
-                                    data_directory.clone(),
-                                    config_directory.clone(),
-                                    custom_css.clone(),
-                                    visitor_tracking,
+                            http1::Builder::new()
+                                .serve_connection(
+                                    io,
+                                    service_fn(|request| {
+                                        service_function(
+                                            request,
+                                            data_directory.clone(),
+                                            config_directory.clone(),
+                                            custom_css.clone(),
+                                            visitor_tracking,
+                                        )
+                                    }),
                                 )
-                            }),
-                        )
-                        .await
-                        .unwrap_or_else(|_| {
-                            info!("error serving connection");
-                        });
+                                .await
+                                .unwrap_or_else(|_| {
+                                    info!("error serving connection");
+                                });
+                        }
+                        _ => {
+                            stream_request.shutdown_circuit().unwrap();
+                        }
+                    };
                 }
-                _ => {
-                    stream_request.shutdown_circuit().unwrap();
+                    _ = cancel_token.cancelled() => {
+                        info!("Shutting down onion service");
+                        return;
+                    }
                 }
-            };
         }
         info!("onion service dropped");
     });
@@ -540,7 +562,6 @@ async fn run_managed_service(
         let custom_css = custom_css.clone();
         let visitor_tracking = visitor_tracking.clone();
 
-
         info!("Incoming request: {req:?}");
 
         async move {
@@ -552,7 +573,7 @@ async fn run_managed_service(
                     .to_bytes()
                     .into(),
             )
-                .expect("Failed to parse body as UTF-8");
+            .expect("Failed to parse body as UTF-8");
             info!("Request body: {body:?}");
             async move {
                 match (method, uri.path()) {
@@ -618,9 +639,9 @@ async fn run_managed_service(
                                 .lock()
                                 .unwrap()
                                 .remove(onion_address);
-                            
+
                             if let Some(service) = service {
-                                drop(service);
+                                service.cancel();
 
                                 return Ok(Response::builder()
                                     .status(StatusCode::OK)
@@ -927,7 +948,7 @@ fn main() {
                 custom_css,
                 visitor_tracking,
             )
-                .await;
+            .await;
         } else {
             onion_service_from_sk(
                 client.clone(),
@@ -937,7 +958,7 @@ fn main() {
                 custom_css,
                 visitor_tracking,
             )
-                .await;
+            .await;
             loop {}
         }
     });
