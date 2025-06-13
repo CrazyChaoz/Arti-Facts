@@ -262,6 +262,8 @@ async fn service_function(
         file_path = data_dir_canon;
     }
 
+    info!("Visit: {}", onion_address);
+    
     let response = if visitor_tracking {
         // Get or create session ID
         let session_id = get_or_create_session_id(&request);
@@ -270,6 +272,7 @@ async fn service_function(
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
         {
+            
             let mut visits = VISIT_COUNTS.lock().unwrap();
             visits
                 .entry(onion_address.clone())

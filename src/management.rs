@@ -1,3 +1,4 @@
+use crate::onion_http_server::{onion_service_from_sk, RUNNING_ONION_SERVICES, VISIT_COUNTS};
 use crate::utils::{generate_key, get_onion_address, keypair_from_sk};
 use arti_client::TorClient;
 use http_body_util::{BodyExt, Full};
@@ -8,10 +9,26 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use log::info;
 use std::collections::HashMap;
-use std::path::{PathBuf};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tor_rtcompat::{PreferredRuntime};
-use crate::onion_http_server::{onion_service_from_sk, RUNNING_ONION_SERVICES, VISIT_COUNTS};
+use tor_rtcompat::PreferredRuntime;
+
+fn load_service_list(config_directory: &Path) -> Result<HashMap<String, ([u8; 32], String)>, serde_json::Error> {
+    let log_file = config_directory.join("service_list.json");
+    fs::read_to_string(&log_file)
+        .map_err(serde_json::Error::io)
+        .and_then(|content| {
+            serde_json::from_str::<HashMap<String, ([u8; 32], String)>>(&content)
+        })
+}
+
+fn save_service_list(config_directory: &Path, services: &HashMap<String, ([u8; 32], String)>) {
+    let log_file = config_directory.join("service_list.json");
+    if let Ok(json) = serde_json::to_string(services) {
+        let _ = fs::write(&log_file, json);
+    }
+}
 
 pub(crate) async fn run_managed_service(
     client: TorClient<PreferredRuntime>,
@@ -21,18 +38,41 @@ pub(crate) async fn run_managed_service(
 ) {
     // Run a simple HTTP server for management page
     let mgmt_addr = "127.0.0.1:8080";
-    println!("Management page available at http://{}/", mgmt_addr);
+    
+    println!("Management page available at http://{mgmt_addr}/");
 
     let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String)>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+        Arc::new(Mutex::new(load_service_list(&config_directory).unwrap_or_default()));
+    
+    if !secret_keys_to_directory_mapping.lock().unwrap().is_empty() {
+        for (onion_address, (sk, share_dir)) in secret_keys_to_directory_mapping.lock().unwrap().iter() {
+            let share_path = PathBuf::from(share_dir);
+            if share_path.exists() && share_path.is_dir() {
+                info!("Starting existing onion service: {onion_address} with directory {share_dir}");
+                tokio::spawn(onion_service_from_sk(
+                    client.clone(),
+                    share_path,
+                    config_directory.clone(),
+                    Some(*sk),
+                    custom_css.clone(),
+                    visitor_tracking,
+                ));
+            } else {
+                info!("Skipping non-existent directory for onion service: {share_dir}");
+            }
+        }
+    }
 
-    let mgmt_service = service_fn(move |request| service_function(request,
-        secret_keys_to_directory_mapping.clone(),
-        client.clone(),
-        config_directory.clone(),
-        custom_css.clone(),
-        visitor_tracking,
-    ));
+    let mgmt_service = service_fn(move |request| {
+        service_function(
+            request,
+            secret_keys_to_directory_mapping.clone(),
+            client.clone(),
+            config_directory.clone(),
+            custom_css.clone(),
+            visitor_tracking,
+        )
+    });
 
     let listener = tokio::net::TcpListener::bind(mgmt_addr).await.unwrap();
     loop {
@@ -49,8 +89,12 @@ fn service_function(
     config_directory: PathBuf,
     custom_css: Option<String>,
     visitor_tracking: bool,
-) -> impl Future<Output = std::result::Result<hyper::Response<http_body_util::combinators::BoxBody<tokio_util::bytes::Bytes, std::convert::Infallible>>, std::io::Error>> {
-
+) -> impl Future<
+    Output = Result<
+        Response<http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>>,
+        std::io::Error,
+    >,
+> {
     let method = req.method().clone();
     let uri = req.uri().clone();
 
@@ -65,7 +109,8 @@ fn service_function(
                 .to_bytes()
                 .into(),
         )
-            .expect("Failed to parse body as UTF-8");
+        .expect("Failed to parse body as UTF-8");
+
         info!("Request body: {body:?}");
         async move {
             match (method, uri.path()) {
@@ -94,6 +139,8 @@ fn service_function(
                                         visitor_tracking,
                                     ).await;
                                 });
+
+                                save_service_list(&config_directory, &secret_keys_to_directory_mapping.lock().unwrap());
 
                                 return Ok(Response::builder()
                                     .status(StatusCode::OK)
@@ -134,6 +181,7 @@ fn service_function(
 
                         if let Some(service) = service {
                             service.cancel();
+                            save_service_list(&config_directory, &secret_keys_to_directory_mapping.lock().unwrap());
 
                             return Ok(Response::builder()
                                 .status(StatusCode::OK)
@@ -154,20 +202,37 @@ fn service_function(
                         .unwrap())
                 }
                 _ => {
-                    let html = include_str!("management_page.html").replace("{existing_onion_services}",
-                                                                            &*secret_keys_to_directory_mapping.clone().lock().unwrap()
-                                                                                .iter()
-                                                                                .map(|(onion_address, (_sk, dir))| {
-                                                                                    format!(
-                                                                                        "<tr><td class=\"onion\">{}</td><td class=\"dir\">{}</td><td>{}</td><td><button onclick=\"deleteOnionService('{}')\" class=\"delete-button\">🗑️</button></td></tr>",
-                                                                                        onion_address,
-                                                                                        dir,
-                                                                                        VISIT_COUNTS.lock().unwrap().get(format!("{onion_address}.onion").as_str()).unwrap_or(&HashMap::new()).iter().count(),
-                                                                                        onion_address
-                                                                                    )
-                                                                                })
-                                                                                .collect::<Vec<_>>()
-                                                                                .join("\n"),
+                    let html = include_str!("management_page.html")
+                        .replace("{existing_onion_services}",
+                            &*secret_keys_to_directory_mapping
+                                .clone()
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .map(|(onion_address, (_sk, dir))| {
+                                    format!(
+                                        "<tr>\
+                                        <td class=\"onion\">{}</td>\
+                                        <td class=\"dir\">{}</td>\
+                                        <td>{}</td>\
+                                        <td><button onclick=\"deleteOnionService('{}')\" class=\"delete-button\">🗑️</button></td>\
+                                        </tr>",
+                                        onion_address,
+                                        dir,
+                                        if visitor_tracking {
+                                            VISIT_COUNTS
+                                                .lock()
+                                                .unwrap()
+                                                .get(format!("{onion_address}.onion").as_str())
+                                                .map_or("0".to_string(), |v| v.len().to_string())
+                                        } else {
+                                            "N/A".to_string()
+                                        },
+                                        onion_address
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
                     );
                     Ok::<_, std::io::Error>(
                         Response::builder()
