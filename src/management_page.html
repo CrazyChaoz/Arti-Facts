@@ -4,31 +4,31 @@
     <title>Arti-Facts Management</title>
     <style>
         body {
-        {
+        
             font-family: sans-serif;
             margin: 2em;
-        }
+        
         }
 
         .info {
-        {
+        
             margin-bottom: 1em;
-        }
+        
         }
 
         .onion {
-        {
+        
             font-weight: bold;
             color: #4a0;
         }
-        }
+        
 
-        .dir {
+        .dir 
         {
             font-family: monospace;
             color: #06c;
         }
-        }
+        
     </style>
 </head>
 <body>
@@ -74,6 +74,26 @@
                 console.error('Error adding onion service:', error);
                 alert('An error occurred while adding the onion service.');
             });
+    }
+    
+    function deleteOnionService(onionAddress) {
+        if (confirm(`Are you sure you want to delete the onion service: ${onionAddress}?`)) {
+            fetch(`/delete-onion-service?onion_address=${encodeURIComponent(onionAddress)}`, {
+                method: 'DELETE'
+            })
+                .then(response => {
+                    if (response.ok) {
+                        alert('Onion service deleted successfully!');
+                        window.location.reload();
+                    } else {
+                        alert('Failed to delete onion service.');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error deleting onion service:', error);
+                    alert('An error occurred while deleting the onion service.');
+                });
+        }
     }
 </script>
 <h1>Arti-Facts Management</h1>

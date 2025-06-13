@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use tokio_util::io::ReaderStream;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
+use tor_hsservice::RunningOnionService;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use tor_proto::stream::IncomingStreamRequest;
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
@@ -32,6 +33,8 @@ use uuid::Uuid;
 
 lazy_static! {
     static ref VISIT_COUNTS: Mutex<HashMap<String, Vec<String>>> = Mutex::new(HashMap::new());
+    static ref RUNNING_ONION_SERVICES: Arc<Mutex<HashMap<String, Arc<RunningOnionService>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 }
 
 const INDEX_TEMPLATE: &str = include_str!("index.html");
@@ -85,7 +88,14 @@ async fn onion_service_from_sk(
     custom_css: Option<String>,
     visitor_tracking: bool,
 ) {
-    let nickname = "arti-facts-service";
+    let nickname = if secret_key.is_some() {
+        format!(
+            "arti-facts-service-{}",
+            get_onion_address(keypair_from_sk(secret_key.unwrap()).public().as_bytes())
+        )
+    } else {
+        "arti-facts-service".into()
+    };
 
     let svc_cfg = OnionServiceConfigBuilder::default()
         .nickname(nickname.parse().unwrap())
@@ -94,7 +104,7 @@ async fn onion_service_from_sk(
 
     let (onion_service, request_stream): (
         _,
-        Pin<Box<dyn Stream<Item = tor_hsservice::RendRequest> + Send>>,
+        Pin<Box<dyn Stream<Item=tor_hsservice::RendRequest> + Send>>,
     ) = if secret_key.is_none() {
         // We are trying to reuse an old instance
         let (service, stream) = tor_client
@@ -122,17 +132,26 @@ async fn onion_service_from_sk(
     };
 
     info!("onion service status: {:?}", onion_service.status());
-
-    while let Some(status_event) = onion_service.status_events().next().await {
-        if status_event.state().is_fully_reachable() {
-            break;
+    let clone_onion_service = onion_service.clone();
+    let _ = tor_client.clone().runtime().spawn(async move {
+        while let Some(status_event) = clone_onion_service.status_events().next().await {
+            if status_event.state().is_fully_reachable() {
+                break;
+            }
         }
-    }
-    println!(
-        "This directory is now available at: {}",
-        onion_service.onion_address().unwrap()
-    );
-    info!("onion service status: {:?}", onion_service.status());
+        println!(
+            "This directory is now available at: {}",
+            clone_onion_service.onion_address().unwrap()
+        );
+        info!("onion service status: {:?}", clone_onion_service.status());
+
+        let clone_running_onion_services = RUNNING_ONION_SERVICES.clone();
+
+        clone_running_onion_services
+            .lock()
+            .unwrap().insert(onion_service.clone().onion_address().unwrap().to_string().trim_end_matches(".onion").into(), onion_service);
+    });
+
 
     let _ = tor_client.clone().runtime().spawn(async move {
         let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
@@ -171,7 +190,6 @@ async fn onion_service_from_sk(
                 }
             };
         }
-        drop(onion_service);
         info!("onion service dropped");
     });
 }
@@ -510,7 +528,7 @@ async fn run_managed_service(
     let mgmt_addr = "127.0.0.1:8080";
     println!("Management page available at http://{}/", mgmt_addr);
 
-    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<[u8; 32], String>>> =
+    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
     let mgmt_service = service_fn(move |req: Request<Incoming>| {
@@ -521,7 +539,7 @@ async fn run_managed_service(
         let config_directory = config_directory.clone();
 
         info!("Incoming request: {req:?}");
-        
+
         async {
             let body = String::from_utf8(
                 req.into_body()
@@ -531,7 +549,7 @@ async fn run_managed_service(
                     .to_bytes()
                     .into(),
             )
-            .expect("Failed to parse body as UTF-8");
+                .expect("Failed to parse body as UTF-8");
             info!("Request body: {body:?}");
             async move {
                 match (method, uri.path()) {
@@ -539,7 +557,7 @@ async fn run_managed_service(
                         let params: HashMap<_, _> = form_urlencoded::parse(body.as_bytes())
                             .into_owned()
                             .collect();
-                        
+
                         info!("Adding onion service: {params:?}");
 
                         if let (Some(secret_key), Some(share_dir)) = (params.get("secret_key"), params.get("share_dir")) {
@@ -547,7 +565,7 @@ async fn run_managed_service(
                             if hex::decode_to_slice(secret_key, &mut sk).is_ok() {
                                 let share_dir = PathBuf::from(share_dir);
                                 if share_dir.exists() && share_dir.is_dir() {
-                                    value.lock().unwrap().insert(sk, share_dir.to_string_lossy().into_owned());
+                                    value.lock().unwrap().insert(get_onion_address(keypair_from_sk(sk).public().as_bytes()), (sk, share_dir.to_string_lossy().into_owned()));
 
                                     let config_dir = config_directory.clone();
                                     tokio::spawn(async move {
@@ -582,16 +600,53 @@ async fn run_managed_service(
                             .body(Full::<Bytes>::from(hex_key).boxed())
                             .unwrap())
                     }
+                    (Method::DELETE, "/delete-onion-service") => {
+                        let params: HashMap<_, _> = form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes())
+                            .into_owned()
+                            .collect();
+                        info!("Deleting onion service: {params:?}");
+
+                        if let Some(onion_address) = params.get("onion_address") {
+                            let onion_address = onion_address.trim_end_matches(".onion");
+
+                            value.lock().unwrap().remove(onion_address);
+
+                            let service = RUNNING_ONION_SERVICES
+                                .lock()
+                                .unwrap()
+                                .remove(onion_address);
+                            
+                            if let Some(service) = service {
+                                drop(service);
+
+                                return Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .body(Full::<Bytes>::from("").boxed())
+                                    .unwrap());
+                            } else {
+                                info!("No running onion service found for address: {}", onion_address);
+                                return Ok(Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .body(Full::<Bytes>::from("Onion service not found").boxed())
+                                    .unwrap());
+                            }
+                        }
+
+                        Ok(Response::builder()
+                            .status(StatusCode::BAD_REQUEST)
+                            .body(Full::<Bytes>::from("Invalid form data").boxed())
+                            .unwrap())
+                    }
                     _ => {
                         let html = include_str!("management_page.html").replace("{existing_onion_services}",
                                                                                 &*value.clone().lock().unwrap()
                                                                                     .iter()
-                                                                                    .map(|(sk, dir)| {
+                                                                                    .map(|(onion_address, (_sk, dir))| {
                                                                                         format!(
                                                                                             "<tr><td class=\"onion\">{}</td><td class=\"dir\">{}</td><td><button onclick=\"deleteOnionService('{}')\" class=\"delete-button\">🗑️</button></td></tr>",
-                                                                                            get_onion_address(keypair_from_sk(*sk).public().as_bytes()),
+                                                                                            onion_address,
                                                                                             dir,
-                                                                                            hex::encode(sk)
+                                                                                            onion_address
                                                                                         )
                                                                                     })
                                                                                     .collect::<Vec<_>>()
@@ -869,7 +924,7 @@ fn main() {
                 custom_css,
                 visitor_tracking,
             )
-            .await;
+                .await;
         } else {
             onion_service_from_sk(
                 client.clone(),
@@ -879,7 +934,7 @@ fn main() {
                 custom_css,
                 visitor_tracking,
             )
-            .await;
+                .await;
             loop {}
         }
     });
