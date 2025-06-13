@@ -22,12 +22,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
-use tor_hsservice::RunningOnionService;
 use tor_llcrypto::pk::ed25519::ExpandedKeypair;
 use tor_proto::stream::IncomingStreamRequest;
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
@@ -137,7 +135,7 @@ async fn onion_service_from_sk(
     let clone_onion_service = onion_service.clone();
 
     let cancel_token = CancellationToken::new();
-    tor_client.clone().runtime().spawn(async move {
+    let _ = tor_client.clone().runtime().spawn(async move {
         while let Some(status_event) = clone_onion_service.status_events().next().await {
             if status_event.state().is_fully_reachable() {
                 break;
@@ -148,14 +146,9 @@ async fn onion_service_from_sk(
             clone_onion_service.onion_address().unwrap()
         );
         info!("onion service status: {:?}", clone_onion_service.status());
-
-
-        
-        drop(clone_onion_service)
     });
 
-    tor_client.clone().runtime().spawn(async move {
-
+    let _ = tor_client.clone().runtime().spawn(async move {
         let clone_running_onion_services = RUNNING_ONION_SERVICES.clone();
         clone_running_onion_services.lock().unwrap().insert(
             onion_service
@@ -167,7 +160,7 @@ async fn onion_service_from_sk(
                 .into(),
             cancel_token.clone(),
         );
-        
+
         let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
 
         tokio::pin!(accepted_streams);
@@ -212,7 +205,6 @@ async fn onion_service_from_sk(
                     }
                 }
         }
-        info!("onion service dropped");
     });
 }
 

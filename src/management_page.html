@@ -1,34 +1,166 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Arti-Facts Management</title>
+    <title>Arti-Fact Management</title>
     <style>
         body {
-        
-            font-family: sans-serif;
-            margin: 2em;
-        
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #f4f6fb;
+            color: #222;
+            margin: 0;
+            padding: 0;
         }
 
-        .info {
-        
-            margin-bottom: 1em;
-        
+        h1 {
+            background: #2d3748;
+            color: #fff;
+            margin: 0;
+            padding: 1.2rem 2rem;
+            font-size: 1.5rem;
+            letter-spacing: 1px;
+            border-bottom: 2px solid #3182ce;
         }
 
-        .onion {
-        
-            font-weight: bold;
-            color: #4a0;
+        h2 {
+            color: #2d3748;
+            font-size: 1.3rem;
+            text-align: center;
+            margin: .5rem auto;
         }
-        
 
-        .dir 
-        {
-            font-family: monospace;
-            color: #06c;
+        table {
+            width: 100%;
+            margin: 0 auto;
+            border-collapse: collapse;
+            background: #fff;
+            box-shadow: 0 2px 8px rgba(44, 62, 80, 0.08);
+            border-radius: 8px;
+            table-layout: fixed;
         }
-        
+
+        th, td {
+            padding: 0.75rem 1.2rem;
+            text-align: left;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        th:first-child, td:first-child {
+            text-align: center;
+        }
+
+        th {
+            background: #e2e8f0;
+            font-weight: 600;
+            border-bottom: 2px solid #cbd5e1;
+        }
+
+        tr:nth-child(even) {
+            background: #f7fafc;
+        }
+
+        tr:hover {
+            background: #ebf8ff;
+        }
+
+        td {
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .form-container {
+            background: #fff;
+            padding: 1.5rem;
+
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(44, 62, 80, 0.08);
+            max-width: 750px;
+            margin: 2rem auto; /* Center the form */
+        }
+
+        .input-group {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .input-group input[type="text"] {
+            margin-bottom: 0;
+            flex: 1 1 auto;
+            font-family: 'Fira Mono', 'Consolas', 'Menlo', monospace;
+            font-size: 1rem;
+            overflow-x: auto;
+            white-space: pre;
+            min-width: 0;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 0.5rem;
+            margin-bottom: 1rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-family: inherit;
+        }
+
+        button {
+            background: #3182ce;
+            color: #fff;
+            padding: 0.6em 1.2em;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 500;
+            transition: background 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            background: #2b6cb0;
+            box-shadow: 0 4px 12px rgba(44, 62, 80, 0.12);
+        }
+
+        button[type="button"] {
+            background: #38a169;
+        }
+
+        button[type="button"]:hover {
+            background: #2f855a;
+        }
+
+        button[type="submit"] {
+            width: 100%;
+            margin-top: 1rem;
+        }
+
+        .footer {
+            text-align: center;
+            margin: 2em 0 1em 0;
+            color: #888;
+            font-size: 0.98em;
+        }
+
+        .footer a {
+            color: #3182ce;
+            text-decoration: none;
+        }
+
+        @media (max-width: 600px) {
+            table, th, td {
+                font-size: 0.95rem;
+                padding: 0.5rem;
+            }
+
+            h1 {
+                font-size: 1.1rem;
+                padding: 0.8rem 1rem;
+            }
+
+            form {
+                padding: 1rem;
+            }
+        }
     </style>
 </head>
 <body>
@@ -75,7 +207,7 @@
                 alert('An error occurred while adding the onion service.');
             });
     }
-    
+
     function deleteOnionService(onionAddress) {
         if (confirm(`Are you sure you want to delete the onion service: ${onionAddress}?`)) {
             fetch(`/delete-onion-service?onion_address=${encodeURIComponent(onionAddress)}`, {
@@ -96,8 +228,8 @@
         }
     }
 </script>
-<h1>Arti-Facts Management</h1>
-<table border="1" cellpadding="5" cellspacing="0">
+<h1>Arti-Fact Management</h1>
+<table>
     <thead>
     <tr>
         <th>Onion Address</th>
@@ -110,19 +242,28 @@
     </tbody>
 </table>
 
-<h2>Add Onion Service</h2>
+<div class="form-container">
+    <h2>Add Onion Service</h2>
+    <form id="add-onion-service" autocomplete="off" method="POST" onsubmit="handleFormSubmit(event);">
+        <label for="secret_key">Secret Key (hex):</label>
+        <div class="input-group">
+            <input type="text" id="secret_key" name="secret_key" size="64" required>
+            <button type="button" onclick="requestRandomKey()">Random</button>
+        </div>
+        <br>
+        <label for="share_dir">Directory to Share:</label>
+        <br>
+        <div class="input-group">
+            <input type="text" id="share_dir" name="share_dir" size="40" required>
+        </div>
+        <br>
+        <button type="submit">Add Onion Service</button>
+    </form>
+</div>
 
-<form id="add-onion-service" autocomplete="off" method="POST" onsubmit="handleFormSubmit(event);">
-    <label for="secret_key">Secret Key (hex):</label>
-    <br>
-    <input type="text" id="secret_key" name="secret_key" size="64" required>
-    <button type="button" onclick="requestRandomKey()">Generate Random Key</button>
-    <br><br>
-    <label for="share_dir">Directory to Share:</label>
-    <br>
-    <input type="text" id="share_dir" name="share_dir" size="40" required>
-    <br><br>
-    <button type="submit">Add Onion Service</button>
-</form>
+<div class="footer">
+    Served with ❤️ using <b>arti-facts</b> &mdash; <a href="https://github.com/CrazyChaoz/Arti-Facts" target="_blank">GitHub
+    Repo</a>
+</div>
 </body>
 </html>
