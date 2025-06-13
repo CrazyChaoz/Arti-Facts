@@ -537,10 +537,13 @@ async fn run_managed_service(
         let method = req.method().clone();
         let uri = req.uri().clone();
         let config_directory = config_directory.clone();
+        let custom_css = custom_css.clone();
+        let visitor_tracking = visitor_tracking.clone();
+
 
         info!("Incoming request: {req:?}");
 
-        async {
+        async move {
             let body = String::from_utf8(
                 req.into_body()
                     .collect()
@@ -574,8 +577,8 @@ async fn run_managed_service(
                                             share_dir,
                                             config_dir,
                                             Some(sk),
-                                            None,
-                                            false,
+                                            custom_css,
+                                            visitor_tracking,
                                         ).await;
                                     });
 
