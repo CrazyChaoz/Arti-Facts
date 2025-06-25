@@ -14,16 +14,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tor_rtcompat::PreferredRuntime;
 
-fn load_service_list(config_directory: &Path) -> Result<HashMap<String, ([u8; 32], String)>, serde_json::Error> {
+fn load_service_list(
+    config_directory: &Path,
+) -> Result<HashMap<String, ([u8; 32], String, bool)>, serde_json::Error> {
     let log_file = config_directory.join("service_list.json");
     fs::read_to_string(&log_file)
         .map_err(serde_json::Error::io)
         .and_then(|content| {
-            serde_json::from_str::<HashMap<String, ([u8; 32], String)>>(&content)
+            serde_json::from_str::<HashMap<String, ([u8; 32], String, bool)>>(&content)
         })
 }
 
-fn save_service_list(config_directory: &Path, services: &HashMap<String, ([u8; 32], String)>) {
+fn save_service_list(
+    config_directory: &Path,
+    services: &HashMap<String, ([u8; 32], String, bool)>,
+) {
     let log_file = config_directory.join("service_list.json");
     if let Ok(json) = serde_json::to_string(services) {
         let _ = fs::write(&log_file, json);
@@ -38,17 +43,23 @@ pub(crate) async fn run_managed_service(
 ) {
     // Run a simple HTTP server for management page
     let mgmt_addr = "127.0.0.1:8080";
-    
+
     println!("Management page available at http://{mgmt_addr}/");
 
-    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String)>>> =
-        Arc::new(Mutex::new(load_service_list(&config_directory).unwrap_or_default()));
-    
+    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String,bool)>>> =
+        Arc::new(Mutex::new(
+            load_service_list(&config_directory).unwrap_or_default(),
+        ));
+
     if !secret_keys_to_directory_mapping.lock().unwrap().is_empty() {
-        for (onion_address, (sk, share_dir)) in secret_keys_to_directory_mapping.lock().unwrap().iter() {
+        for (onion_address, (sk, share_dir,is_proxy)) in
+            secret_keys_to_directory_mapping.lock().unwrap().iter()
+        {
             let share_path = PathBuf::from(share_dir);
             if share_path.exists() && share_path.is_dir() {
-                info!("Starting existing onion service: {onion_address} with directory {share_dir}");
+                info!(
+                    "Starting existing onion service: {onion_address} with directory {share_dir}"
+                );
                 tokio::spawn(onion_service_from_sk(
                     client.clone(),
                     share_path,
@@ -85,7 +96,7 @@ pub(crate) async fn run_managed_service(
 
 fn service_function(
     req: Request<Incoming>,
-    secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String)>>>,
+    secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String, bool)>>>,
     client: TorClient<PreferredRuntime>,
     config_directory: PathBuf,
     custom_css: Option<String>,
@@ -127,7 +138,7 @@ fn service_function(
                         if hex::decode_to_slice(secret_key, &mut sk).is_ok() {
                             let share_dir = PathBuf::from(share_dir);
                             if share_dir.exists() && share_dir.is_dir() {
-                                secret_keys_to_directory_mapping.lock().unwrap().insert(get_onion_address(keypair_from_sk(sk).public().as_bytes()), (sk, share_dir.to_string_lossy().into_owned()));
+                                secret_keys_to_directory_mapping.lock().unwrap().insert(get_onion_address(keypair_from_sk(sk).public().as_bytes()), (sk, share_dir.to_string_lossy().into_owned(),false));
 
                                 let config_dir = config_directory.clone();
                                 tokio::spawn(async move {
@@ -211,7 +222,7 @@ fn service_function(
                                 .lock()
                                 .unwrap()
                                 .iter()
-                                .map(|(onion_address, (_sk, dir))| {
+                                .map(|(onion_address, (_sk, dir,is_proxy))| {
                                     format!(
                                         "<tr>\
                                         <td class=\"onion\">{}</td>\
