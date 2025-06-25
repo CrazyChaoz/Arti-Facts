@@ -12,9 +12,10 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use lazy_static::lazy_static;
-use log::info;
+use log::{error, info};
 use std::collections::HashMap;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -23,25 +24,32 @@ use tokio_util::sync::CancellationToken;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_proto::stream::IncomingStreamRequest;
-use tor_rtcompat::{PreferredRuntime};
-use uuid::Uuid;
+use tor_rtcompat::PreferredRuntime;
+
 use crate::utils;
 use crate::utils::get_onion_address;
+use tor_hsrproxy::{
+    config::{Encapsulation, ProxyAction, ProxyConfigBuilder, ProxyPattern, ProxyRule, TargetAddr},
+    OnionServiceReverseProxy,
+};
+use uuid::Uuid;
 
 lazy_static! {
-    pub (crate) static ref VISIT_COUNTS: Arc<Mutex<HashMap<String,HashMap<String, Vec<String>>>>> = Arc::new(Mutex::new(HashMap::new()));
-    pub (crate) static ref RUNNING_ONION_SERVICES: Arc<Mutex<HashMap<String, CancellationToken>>> =
+    pub(crate) static ref VISIT_COUNTS: Arc<Mutex<HashMap<String, HashMap<String, Vec<String>>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    pub(crate) static ref RUNNING_ONION_SERVICES: Arc<Mutex<HashMap<String, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
 
 const INDEX_TEMPLATE: &str = include_str!("index.html");
 const DEFAULT_CSS: &str = include_str!("default.css");
 
-
 pub(crate) fn load_visit_log(config_directory: &Path) {
     let log_file = config_directory.join("visit_log.json");
     if let Ok(content) = fs::read_to_string(&log_file) {
-        if let Ok(visits) = serde_json::from_str::<HashMap<String,HashMap<String, Vec<String>>>>(&content) {
+        if let Ok(visits) =
+            serde_json::from_str::<HashMap<String, HashMap<String, Vec<String>>>>(&content)
+        {
             *VISIT_COUNTS.lock().unwrap() = visits;
         }
     }
@@ -75,6 +83,7 @@ pub(crate) async fn onion_service_from_sk(
     config_directory: PathBuf,
     secret_key: Option<[u8; 32]>,
     custom_css: Option<String>,
+    forward_proxy: Option<(u16, SocketAddr)>,
     visitor_tracking: bool,
 ) {
     let nickname = if secret_key.is_some() {
@@ -154,51 +163,86 @@ pub(crate) async fn onion_service_from_sk(
             cancel_token.clone(),
         );
 
+        if let Some(forward_proxy) = forward_proxy {
+            let (local_port, listeners) = forward_proxy;
 
-        let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
+            let proxy_rule = ProxyRule::new(
+                ProxyPattern::one_port(local_port)
+                    .map_err(|e| println!("Not a valid port: {e}"))
+                    .unwrap(),
+                ProxyAction::Forward(Encapsulation::Simple, TargetAddr::Inet(listeners)),
+            );
 
-        tokio::pin!(accepted_streams);
+            let mut proxy_config = ProxyConfigBuilder::default();
+            proxy_config.set_proxy_ports(vec![proxy_rule]);
+            let proxy = OnionServiceReverseProxy::new(
+                proxy_config
+                    .build()
+                    .expect("Unreachable, all fields have been set"),
+            );
 
-        loop {
             tokio::select! {
-            Some(stream_request) = accepted_streams.next() => {
-                    info!("new incoming stream");
-                    let request = stream_request.request().clone();
-                    match request {
-                        IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-                            let onion_service_stream =
-                                stream_request.accept(Connected::new_empty()).await.unwrap();
-                            let io = TokioIo::new(onion_service_stream);
-
-                            http1::Builder::new()
-                                .serve_connection(
-                                    io,
-                                    service_fn(|request| {
-                                        service_function(
-                                            request,
-                                            onion_service.onion_address().unwrap().to_string(),
-                                            data_directory.clone(),
-                                            config_directory.clone(),
-                                            custom_css.clone(),
-                                            visitor_tracking,
-                                        )
-                                    }),
-                                )
-                                .await
-                                .unwrap_or_else(|_| {
-                                    info!("error serving connection");
-                                });
-                        }
-                        _ => {
-                            stream_request.shutdown_circuit().unwrap();
-                        }
-                    };
-                }
-                    _ = cancel_token.cancelled() => {
-                        info!("Shutting down onion service");
-                        return;
+                result = proxy.handle_requests(
+                    tor_client.runtime().clone(),
+                    nickname.parse().unwrap(),
+                    request_stream,
+                ) => {
+                    match result {
+                        Ok(_) => info!("Proxy handling completed normally"),
+                        Err(e) => error!("Error handling requests: {}", e),
                     }
                 }
+                _ = cancel_token.cancelled() => {
+                    info!("Shutting down onion service via cancellation token");
+                    return;
+                }
+            }
+        } else {
+            let accepted_streams = tor_hsservice::handle_rend_requests(request_stream);
+
+            tokio::pin!(accepted_streams);
+
+            loop {
+                tokio::select! {
+                Some(stream_request) = accepted_streams.next() => {
+                        info!("new incoming stream");
+                        let request = stream_request.request().clone();
+                        match request {
+                            IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
+                                let onion_service_stream =
+                                    stream_request.accept(Connected::new_empty()).await.unwrap();
+                                let io = TokioIo::new(onion_service_stream);
+
+                                http1::Builder::new()
+                                    .serve_connection(
+                                        io,
+                                        service_fn(|request| {
+                                            service_function(
+                                                request,
+                                                onion_service.onion_address().unwrap().to_string(),
+                                                data_directory.clone(),
+                                                config_directory.clone(),
+                                                custom_css.clone(),
+                                                visitor_tracking,
+                                            )
+                                        }),
+                                    )
+                                    .await
+                                    .unwrap_or_else(|_| {
+                                        info!("error serving connection");
+                                    });
+                            }
+                            _ => {
+                                stream_request.shutdown_circuit().unwrap();
+                            }
+                        };
+                    }
+                        _ = cancel_token.cancelled() => {
+                            info!("Shutting down onion service");
+                            return;
+                        }
+                    }
+            }
         }
     });
 }
@@ -263,7 +307,7 @@ async fn service_function(
     }
 
     info!("Visit: {}", onion_address);
-    
+
     let response = if visitor_tracking {
         // Get or create session ID
         let session_id = get_or_create_session_id(&request);
@@ -272,7 +316,6 @@ async fn service_function(
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
         {
-            
             let mut visits = VISIT_COUNTS.lock().unwrap();
             visits
                 .entry(onion_address.clone())

@@ -9,6 +9,7 @@ use arti_client::TorClient;
 use clap::{Arg, Command};
 use log::info;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 
@@ -58,11 +59,27 @@ fn cli_args() -> clap::ArgMatches {
                 .action(clap::ArgAction::SetTrue)
                 .help("Enable visit tracking (saves visit counts in config directory)"),
         ).arg(
-        Arg::new("managed")
-            .long("managed")
-            .action(clap::ArgAction::SetTrue)
-            .help("Run the service in managed mode, where it serves a static HTML page with management page to manage shared folders and its onion address"),
-    )
+            Arg::new("managed")
+                .long("managed")
+                .action(clap::ArgAction::SetTrue)
+                .help("Run the service in managed mode, where it serves a static HTML page with management page to manage shared folders and its onion address"),
+        ).arg(
+            Arg::new("proxy")
+                .short('p')
+                .long("proxy")
+                .value_name("URL")
+                .help("Sets a forwarding URL.\n\
+                       Sample: 127.0.0.1:54321\n\
+                       e.g. asdfasdfasdf.onion:80 -> 127.0.0.1:54321")
+        ).arg(
+            Arg::new("extended-proxy")
+                .long("extended-proxy")
+                .value_name("(PORT, URL)")
+                .help("Sets an extended forwarding URL for the Tor client.\n\
+                    Example: (12345, 127.0.0.1:54321)\n\
+                    This maps asdfasdfasdf.onion:12345 -> 127.0.0.1:54321",
+                )
+        )
         .get_matches()
 }
 
@@ -232,6 +249,37 @@ fn main() {
         false
     };
 
+    let mut proxy_url = if matches.get_one::<String>("proxy").is_some() {
+        let sock_addr: SocketAddr = matches
+            .get_one::<String>("proxy")
+            .map(|s| s.to_string())
+            .unwrap()
+            .parse()
+            .expect("Invalid proxy URL format");
+        Some((80, sock_addr))
+    } else {
+        None
+    };
+
+    proxy_url = if let Some(ext_proxy) = matches.get_one::<String>("extended-proxy") {
+        // Remove possible parentheses and whitespace, then split
+        let trimmed = ext_proxy
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')');
+        let parts: Vec<&str> = trimmed.split(',').map(|s| s.trim()).collect();
+        if parts.len() != 2 {
+            panic!("Invalid extended proxy format, expected (PORT, URL)");
+        }
+        let port: u16 = parts[0]
+            .parse()
+            .expect("Invalid port number in extended proxy");
+        let sock_addr: SocketAddr = parts[1].parse().expect("Invalid URL in extended proxy");
+        Some((port, sock_addr))
+    } else {
+        proxy_url
+    };
+
     info!("Starting Tor client");
 
     let rt = if let Ok(runtime) = PreferredRuntime::current() {
@@ -271,6 +319,7 @@ fn main() {
                 config_directory,
                 secret_key,
                 custom_css,
+                proxy_url,
                 visitor_tracking,
             )
             .await;

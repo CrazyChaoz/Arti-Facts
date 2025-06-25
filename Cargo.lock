@@ -162,6 +162,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.98"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -220,8 +226,9 @@ dependencies = [
 
 [[package]]
 name = "arti-facts"
-version = "2.6.1"
+version = "2.7.0"
 dependencies = [
+ "anyhow",
  "arti-client",
  "async_zip",
  "base32",
@@ -244,6 +251,7 @@ dependencies = [
  "tokio-util",
  "tor-cell",
  "tor-hscrypto",
+ "tor-hsrproxy",
  "tor-hsservice",
  "tor-llcrypto",
  "tor-proto",
@@ -2853,6 +2861,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rangemap"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60fcc7d6849342eff22c4350c8b9a989ee8ceabc4b481253e8946b9fe83d684"
+
+[[package]]
 name = "rdrand"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4173,6 +4187,35 @@ dependencies = [
  "tor-units",
  "void",
  "zeroize",
+]
+
+[[package]]
+name = "tor-hsrproxy"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fea6823821170a8abceb72d3a444ab2d15db2eab878e18b7e67ff700b3038c4"
+dependencies = [
+ "derive-deftly 1.0.1",
+ "derive_builder_fork_arti",
+ "futures",
+ "itertools",
+ "oneshot-fused-workaround",
+ "rangemap",
+ "safelog",
+ "serde",
+ "serde_with",
+ "strum",
+ "thiserror 2.0.12",
+ "tor-async-utils",
+ "tor-cell",
+ "tor-config",
+ "tor-error",
+ "tor-hsservice",
+ "tor-log-ratelim",
+ "tor-proto",
+ "tor-rtcompat",
+ "tracing",
+ "void",
 ]
 
 [[package]]

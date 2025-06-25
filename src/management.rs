@@ -55,6 +55,7 @@ pub(crate) async fn run_managed_service(
                     config_directory.clone(),
                     Some(*sk),
                     custom_css.clone(),
+                    None,
                     visitor_tracking,
                 ));
             } else {
@@ -136,6 +137,7 @@ fn service_function(
                                         config_dir,
                                         Some(sk),
                                         custom_css,
+                                        None,
                                         visitor_tracking,
                                     ).await;
                                 });
