@@ -1,0 +1,19 @@
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+out/
+# OS generated files
+.DS_Store
+Thumbs.db
+# Build output
+/target
+/build
+# Logs
+*.log
+# Temporary files
+*.tmp
+*.swp
+
+#Auto-generated files
+.arti-fact-*
