@@ -11,7 +11,6 @@ pub(crate) fn keypair_from_sk(secret_key: [u8; 32]) -> ExpandedKeypair {
     ExpandedKeypair::from_secret_key_bytes(bytes).expect("error converting to ExpandedKeypair")
 }
 
-
 /// Generates a random 32-byte secret key using a cryptographically secure random number generator.
 ///
 /// # Returns

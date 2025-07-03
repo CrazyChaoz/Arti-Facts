@@ -1,5 +1,5 @@
 use arti_client::TorClient;
-use async_zip::{tokio::write::ZipFileWriter, Compression};
+use async_zip::{Compression, tokio::write::ZipFileWriter};
 use async_zip::{ZipEntryBuilder, ZipString};
 use futures::task::SpawnExt;
 use futures::{AsyncWriteExt, TryStreamExt};
@@ -29,8 +29,8 @@ use tor_rtcompat::PreferredRuntime;
 use crate::utils;
 use crate::utils::get_onion_address;
 use tor_hsrproxy::{
-    config::{Encapsulation, ProxyAction, ProxyConfigBuilder, ProxyPattern, ProxyRule, TargetAddr},
     OnionServiceReverseProxy,
+    config::{Encapsulation, ProxyAction, ProxyConfigBuilder, ProxyPattern, ProxyRule, TargetAddr},
 };
 use uuid::Uuid;
 

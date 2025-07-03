@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>Arti-Fact Management</title>
     <style>
@@ -38,7 +39,8 @@
             table-layout: fixed;
         }
 
-        th, td {
+        th,
+        td {
             padding: 0.75rem 1.2rem;
             text-align: left;
             overflow: hidden;
@@ -46,7 +48,8 @@
             white-space: nowrap;
         }
 
-        th:first-child, td:first-child {
+        th:first-child,
+        td:first-child {
             text-align: center;
         }
 
@@ -69,11 +72,13 @@
         }
 
 
-        th:nth-child(3), td:nth-child(3) {
+        th:nth-child(3),
+        td:nth-child(3) {
             width: 50px;
         }
 
-        th:nth-child(4), td:nth-child(4) {
+        th:nth-child(4),
+        td:nth-child(4) {
             width: 50px;
         }
 
@@ -84,7 +89,8 @@
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(44, 62, 80, 0.08);
             max-width: 750px;
-            margin: 2rem auto; /* Center the form */
+            margin: 2rem auto;
+            /* Center the form */
         }
 
         .input-group {
@@ -156,7 +162,10 @@
         }
 
         @media (max-width: 600px) {
-            table, th, td {
+
+            table,
+            th,
+            td {
                 font-size: 0.95rem;
                 padding: 0.5rem;
             }
@@ -172,108 +181,111 @@
         }
     </style>
 </head>
+
 <body>
-<script>
-    function requestRandomKey() {
-        fetch('/generate-random-key')
-            .then(response => response.text())
-            .then(key => {
-                document.getElementById('secret_key').value = key;
-            })
-            .catch(error => {
-                console.error('Error generating random key:', error);
-                alert('Failed to generate random key.');
+    <script>
+        function requestRandomKey() {
+            fetch('/generate-random-key')
+                .then(response => response.text())
+                .then(key => {
+                    document.getElementById('secret_key').value = key;
+                })
+                .catch(error => {
+                    console.error('Error generating random key:', error);
+                    alert('Failed to generate random key.');
+                });
+        }
+
+        function handleFormSubmit(event) {
+            event.preventDefault();
+            const form = document.getElementById('add-onion-service');
+            const formData = new FormData(form);
+
+            const urlEncodedData = new URLSearchParams();
+            formData.forEach((value, key) => {
+                urlEncodedData.append(key, value);
             });
-    }
 
-    function handleFormSubmit(event) {
-        event.preventDefault();
-        const form = document.getElementById('add-onion-service');
-        const formData = new FormData(form);
-
-        const urlEncodedData = new URLSearchParams();
-        formData.forEach((value, key) => {
-            urlEncodedData.append(key, value);
-        });
-
-        fetch('/add-onion-service', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: urlEncodedData.toString()
-        })
-            .then(response => {
-                if (response.ok) {
-                    alert('Onion service added successfully!');
-                    window.location.reload();
-                } else {
-                    alert('Failed to add onion service.');
-                }
-            })
-            .catch(error => {
-                console.error('Error adding onion service:', error);
-                alert('An error occurred while adding the onion service.');
-            });
-    }
-
-    function deleteOnionService(onionAddress) {
-        if (confirm(`Are you sure you want to delete the onion service: ${onionAddress}?`)) {
-            fetch(`/delete-onion-service?onion_address=${encodeURIComponent(onionAddress)}`, {
-                method: 'DELETE'
+            fetch('/add-onion-service', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: urlEncodedData.toString()
             })
                 .then(response => {
                     if (response.ok) {
-                        alert('Onion service deleted successfully!');
+                        alert('Onion service added successfully!');
                         window.location.reload();
                     } else {
-                        alert('Failed to delete onion service.');
+                        alert('Failed to add onion service.');
                     }
                 })
                 .catch(error => {
-                    console.error('Error deleting onion service:', error);
-                    alert('An error occurred while deleting the onion service.');
+                    console.error('Error adding onion service:', error);
+                    alert('An error occurred while adding the onion service.');
                 });
         }
-    }
-</script>
-<h1>Arti-Fact Management</h1>
-<table>
-    <thead>
-    <tr>
-        <th>Onion Address</th>
-        <th>Shared Directory</th>
-        <th>Visits</th>
-        <th>Delete</th>
-    </tr>
-    </thead>
-    <tbody id="onion-services-table">
-    {existing_onion_services}
-    </tbody>
-</table>
 
-<div class="form-container">
-    <h2>Add Onion Service</h2>
-    <form id="add-onion-service" autocomplete="off" method="POST" onsubmit="handleFormSubmit(event);">
-        <label for="secret_key">Secret Key (hex):</label>
-        <div class="input-group">
-            <input type="text" id="secret_key" name="secret_key" size="64" required>
-            <button type="button" onclick="requestRandomKey()">Random</button>
-        </div>
-        <br>
-        <label for="share_dir">Directory to Share:</label>
-        <br>
-        <div class="input-group">
-            <input type="text" id="share_dir" name="share_dir" size="40" required>
-        </div>
-        <br>
-        <button type="submit">Add Onion Service</button>
-    </form>
-</div>
+        function deleteOnionService(onionAddress) {
+            if (confirm(`Are you sure you want to delete the onion service: ${onionAddress}?`)) {
+                fetch(`/delete-onion-service?onion_address=${encodeURIComponent(onionAddress)}`, {
+                    method: 'DELETE'
+                })
+                    .then(response => {
+                        if (response.ok) {
+                            alert('Onion service deleted successfully!');
+                            window.location.reload();
+                        } else {
+                            alert('Failed to delete onion service.');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error deleting onion service:', error);
+                        alert('An error occurred while deleting the onion service.');
+                    });
+            }
+        }
+    </script>
+    <h1>Arti-Fact Management</h1>
+    <table>
+        <thead>
+            <tr>
+                <th>Onion Address</th>
+                <th>Shared Directory</th>
+                <th>Visits</th>
+                <th>Delete</th>
+            </tr>
+        </thead>
+        <tbody id="onion-services-table">
+            {existing_onion_services}
+        </tbody>
+    </table>
 
-<div class="footer">
-    Served with ❤️ using <b>arti-facts</b> &mdash; <a href="https://github.com/CrazyChaoz/Arti-Facts" target="_blank">GitHub
-    Repo</a>
-</div>
+    <div class="form-container">
+        <h2>Add Onion Service</h2>
+        <form id="add-onion-service" autocomplete="off" method="POST" onsubmit="handleFormSubmit(event);">
+            <label for="secret_key">Secret Key (hex):</label>
+            <div class="input-group">
+                <input type="text" id="secret_key" name="secret_key" size="64" required>
+                <button type="button" onclick="requestRandomKey()">Random</button>
+            </div>
+            <br>
+            <label for="share_dir">Directory to Share:</label>
+            <br>
+            <div class="input-group">
+                <input type="text" id="share_dir" name="share_dir" size="40" required>
+            </div>
+            <br>
+            <button type="submit">Add Onion Service</button>
+        </form>
+    </div>
+
+    <div class="footer">
+        Served with ❤️ using <b>arti-facts</b> &mdash; <a href="https://github.com/CrazyChaoz/Arti-Facts"
+            target="_blank">GitHub
+            Repo</a>
+    </div>
 </body>
+
 </html>

@@ -115,7 +115,8 @@ table {
     table-layout: fixed;
 }
 
-th, td {
+th,
+td {
     padding: 0.75rem 1.2rem;
     text-align: left;
     overflow: hidden;
@@ -123,7 +124,8 @@ th, td {
     white-space: nowrap;
 }
 
-th:first-child, td:first-child {
+th:first-child,
+td:first-child {
     text-align: center;
 }
 
@@ -152,7 +154,10 @@ td {
 }
 
 @media (max-width: 600px) {
-    table, th, td {
+
+    table,
+    th,
+    td {
         font-size: 0.95rem;
         padding: 0.5rem;
     }
@@ -162,38 +167,52 @@ td {
         padding: 0.8rem 1rem;
     }
 
-    th:nth-child(3), td:nth-child(3) {
+    th:nth-child(3),
+    td:nth-child(3) {
         display: none;
     }
 }
 
 @media (max-width: 810px) {
-    th:nth-child(4), td:nth-child(4) /* Modified */
-    {
+    th:nth-child(4),
+    td:nth-child(4)
+
+    /* Modified */
+        {
         display: none;
     }
 }
 
 
-th:nth-child(1), td:nth-child(1) {
-    width: 35px; /* Fixed width for Type column */
+th:nth-child(1),
+td:nth-child(1) {
+    width: 35px;
+    /* Fixed width for Type column */
 }
 
-th:nth-child(2), td:nth-child(2) {
+th:nth-child(2),
+td:nth-child(2) {
     min-width: 50px;
-    width: 100%; /* 100% minus sum of other column widths */
+    width: 100%;
+    /* 100% minus sum of other column widths */
 }
 
-th:nth-child(3), td:nth-child(3) {
-    width: 120px; /* Fixed width for Size */
+th:nth-child(3),
+td:nth-child(3) {
+    width: 120px;
+    /* Fixed width for Size */
 }
 
-th:nth-child(4), td:nth-child(4) {
-    width: 180px; /* Fixed width for Modified */
+th:nth-child(4),
+td:nth-child(4) {
+    width: 180px;
+    /* Fixed width for Modified */
 }
 
-th:nth-child(5), td:nth-child(5) {
-    width: 120px; /* Allow Path column to shrink last */
+th:nth-child(5),
+td:nth-child(5) {
+    width: 120px;
+    /* Allow Path column to shrink last */
 }
 
 .footer {

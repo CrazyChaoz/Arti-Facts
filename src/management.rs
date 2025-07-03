@@ -1,4 +1,4 @@
-use crate::onion_http_server::{onion_service_from_sk, RUNNING_ONION_SERVICES, VISIT_COUNTS};
+use crate::onion_http_server::{RUNNING_ONION_SERVICES, VISIT_COUNTS, onion_service_from_sk};
 use crate::utils::{generate_key, get_onion_address, keypair_from_sk};
 use arti_client::TorClient;
 use http_body_util::{BodyExt, Full};
@@ -46,13 +46,13 @@ pub(crate) async fn run_managed_service(
 
     println!("Management page available at http://{mgmt_addr}/");
 
-    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String,bool)>>> =
+    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String, bool)>>> =
         Arc::new(Mutex::new(
             load_service_list(&config_directory).unwrap_or_default(),
         ));
 
     if !secret_keys_to_directory_mapping.lock().unwrap().is_empty() {
-        for (onion_address, (sk, share_dir,is_proxy)) in
+        for (onion_address, (sk, share_dir, is_proxy)) in
             secret_keys_to_directory_mapping.lock().unwrap().iter()
         {
             let share_path = PathBuf::from(share_dir);

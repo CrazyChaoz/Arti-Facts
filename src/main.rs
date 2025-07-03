@@ -4,8 +4,8 @@ mod utils;
 
 use crate::onion_http_server::load_visit_log;
 use crate::utils::{generate_key, get_onion_address};
-use arti_client::config::TorClientConfigBuilder;
 use arti_client::TorClient;
+use arti_client::config::TorClientConfigBuilder;
 use clap::{Arg, Command};
 use log::info;
 use std::fs;
