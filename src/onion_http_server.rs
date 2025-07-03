@@ -194,7 +194,6 @@ pub(crate) async fn onion_service_from_sk(
                 }
                 _ = cancel_token.cancelled() => {
                     info!("Shutting down onion service via cancellation token");
-                    return;
                 }
             }
         } else {

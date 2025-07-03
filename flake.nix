@@ -13,11 +13,12 @@
   };
 
   outputs =
-    { nixpkgs
-    , crane
-    , fenix
-    , flake-utils
-    , ...
+    {
+      nixpkgs,
+      crane,
+      fenix,
+      flake-utils,
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -80,7 +81,10 @@
 
         defaultPackage = pkgs.symlinkJoin {
           name = "arti-facts";
-          paths = [ linux windows ];
+          paths = [
+            linux
+            windows
+          ];
         };
       }
     );

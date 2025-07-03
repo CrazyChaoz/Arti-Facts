@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "arti-facts"
-version = "2.7.1"
+version = "2.7.2"
 dependencies = [
  "arti-client",
  "async_zip",

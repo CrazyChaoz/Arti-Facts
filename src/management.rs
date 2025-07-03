@@ -66,7 +66,12 @@ pub(crate) async fn run_managed_service(
                     config_directory.clone(),
                     Some(*sk),
                     custom_css.clone(),
-                    None,
+                    if *is_proxy {
+                        // For proxy, parse share_dir as (u16, std::net::SocketAddr)
+                        serde_json::from_str::<(u16, std::net::SocketAddr)>(share_dir).ok()
+                    } else {
+                        None
+                    },
                     visitor_tracking,
                 ));
             } else {
@@ -217,7 +222,7 @@ fn service_function(
                 _ => {
                     let html = include_str!("management_page.html")
                         .replace("{existing_onion_services}",
-                            &*secret_keys_to_directory_mapping
+                            &secret_keys_to_directory_mapping
                                 .clone()
                                 .lock()
                                 .unwrap()
@@ -226,11 +231,12 @@ fn service_function(
                                     format!(
                                         "<tr>\
                                         <td class=\"onion\">{}</td>\
-                                        <td class=\"dir\">{}</td>\
+                                        <td class=\"{}\">{}</td>\
                                         <td>{}</td>\
                                         <td><button onclick=\"deleteOnionService('{}')\" class=\"delete-button\">🗑️</button></td>\
                                         </tr>",
                                         onion_address,
+                                        if *is_proxy { "proxy" } else { "dir" },
                                         dir,
                                         if visitor_tracking {
                                             VISIT_COUNTS

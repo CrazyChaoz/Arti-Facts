@@ -323,7 +323,9 @@ fn main() {
                 visitor_tracking,
             )
             .await;
-            loop {}
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
         }
     });
 }
