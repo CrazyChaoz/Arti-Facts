@@ -83,6 +83,7 @@ fn cli_args() -> clap::ArgMatches {
         .get_matches()
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let matches = cli_args();
 
@@ -112,7 +113,7 @@ fn main() {
         current_directory.clone()
     };
 
-    println!("Sharing directory: {data_directory:?}");
+    println!("Sharing directory: {}", data_directory.display());
 
     let mut secret_key = if let Some(hex_key) = matches.get_one::<String>("key") {
         assert_eq!(
@@ -221,7 +222,7 @@ fn main() {
         }
     };
 
-    println!("Using config directory: {config_directory:?}");
+    println!("Using config directory: {}", config_directory.display());
 
     // if secret_key is Some, print it in hex format
     if let Some(sk) = secret_key {
@@ -252,7 +253,7 @@ fn main() {
     let mut proxy_url = if matches.get_one::<String>("proxy").is_some() {
         let sock_addr: SocketAddr = matches
             .get_one::<String>("proxy")
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap()
             .parse()
             .expect("Invalid proxy URL format");
@@ -267,10 +268,8 @@ fn main() {
             .trim()
             .trim_start_matches('(')
             .trim_end_matches(')');
-        let parts: Vec<&str> = trimmed.split(',').map(|s| s.trim()).collect();
-        if parts.len() != 2 {
-            panic!("Invalid extended proxy format, expected (PORT, URL)");
-        }
+        let parts: Vec<&str> = trimmed.split(',').map(str::trim).collect();
+        assert!((parts.len() == 2), "Invalid extended proxy format, expected (PORT, URL)");
         let port: u16 = parts[0]
             .parse()
             .expect("Invalid port number in extended proxy");

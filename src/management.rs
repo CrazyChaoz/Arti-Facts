@@ -14,9 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tor_rtcompat::PreferredRuntime;
 
+type SecretKeysToDirectoryMapping = HashMap<String, ([u8; 32], String, bool)>;
+
 fn load_service_list(
     config_directory: &Path,
-) -> Result<HashMap<String, ([u8; 32], String, bool)>, serde_json::Error> {
+) -> Result<SecretKeysToDirectoryMapping, serde_json::Error> {
     let log_file = config_directory.join("service_list.json");
     fs::read_to_string(&log_file)
         .map_err(serde_json::Error::io)
@@ -46,7 +48,7 @@ pub(crate) async fn run_managed_service(
 
     println!("Management page available at http://{mgmt_addr}/");
 
-    let secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String, bool)>>> =
+    let secret_keys_to_directory_mapping: Arc<Mutex<SecretKeysToDirectoryMapping>> =
         Arc::new(Mutex::new(
             load_service_list(&config_directory).unwrap_or_default(),
         ));
@@ -99,9 +101,10 @@ pub(crate) async fn run_managed_service(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn service_function(
     req: Request<Incoming>,
-    secret_keys_to_directory_mapping: Arc<Mutex<HashMap<String, ([u8; 32], String, bool)>>>,
+    secret_keys_to_directory_mapping: Arc<Mutex<SecretKeysToDirectoryMapping>>,
     client: TorClient<PreferredRuntime>,
     config_directory: PathBuf,
     custom_css: Option<String>,
@@ -205,13 +208,12 @@ fn service_function(
                                 .status(StatusCode::OK)
                                 .body(Full::<Bytes>::from("").boxed())
                                 .unwrap());
-                        } else {
-                            info!("No running onion service found for address: {}", onion_address);
-                            return Ok(Response::builder()
-                                .status(StatusCode::NOT_FOUND)
-                                .body(Full::<Bytes>::from("Onion service not found").boxed())
-                                .unwrap());
                         }
+                        info!("No running onion service found for address: {onion_address}");
+                        return Ok(Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Full::<Bytes>::from("Onion service not found").boxed())
+                            .unwrap());
                     }
 
                     Ok(Response::builder()

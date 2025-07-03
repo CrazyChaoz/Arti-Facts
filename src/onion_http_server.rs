@@ -11,14 +11,13 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use lazy_static::lazy_static;
 use log::{error, info};
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, LazyLock};
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 use tor_cell::relaycell::msg::Connected;
@@ -34,12 +33,14 @@ use tor_hsrproxy::{
 };
 use uuid::Uuid;
 
-lazy_static! {
-    pub(crate) static ref VISIT_COUNTS: Arc<Mutex<HashMap<String, HashMap<String, Vec<String>>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    pub(crate) static ref RUNNING_ONION_SERVICES: Arc<Mutex<HashMap<String, CancellationToken>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-}
+// Type aliases for readability
+type VisitLog = HashMap<String, HashMap<String, Vec<String>>>;
+type RunningOnionServices = HashMap<String, CancellationToken>;
+
+pub(crate) static VISIT_COUNTS: LazyLock<Arc<Mutex<VisitLog>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+pub(crate) static RUNNING_ONION_SERVICES: LazyLock<Arc<Mutex<RunningOnionServices>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 const INDEX_TEMPLATE: &str = include_str!("index.html");
 const DEFAULT_CSS: &str = include_str!("default.css");
@@ -77,6 +78,7 @@ fn get_or_create_session_id(request: &Request<Incoming>) -> String {
     Uuid::new_v4().to_string()
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn onion_service_from_sk(
     tor_client: TorClient<PreferredRuntime>,
     data_directory: PathBuf,
@@ -188,11 +190,11 @@ pub(crate) async fn onion_service_from_sk(
                     request_stream,
                 ) => {
                     match result {
-                        Ok(_) => info!("Proxy handling completed normally"),
-                        Err(e) => error!("Error handling requests: {}", e),
+                        Ok(()) => info!("Proxy handling completed normally"),
+                        Err(e) => error!("Error handling requests: {e}"),
                     }
                 }
-                _ = cancel_token.cancelled() => {
+                () = cancel_token.cancelled() => {
                     info!("Shutting down onion service via cancellation token");
                 }
             }
@@ -234,9 +236,9 @@ pub(crate) async fn onion_service_from_sk(
                             _ => {
                                 stream_request.shutdown_circuit().unwrap();
                             }
-                        };
+                        }
                     }
-                        _ = cancel_token.cancelled() => {
+                        () = cancel_token.cancelled() => {
                             info!("Shutting down onion service");
                             return;
                         }
@@ -269,6 +271,7 @@ pub(crate) async fn onion_service_from_sk(
 /// - If the requested path is a file, streams its contents.
 /// - If the `?download` query is present on a directory, streams a ZIP archive of its contents.
 /// - Returns 404 Not Found if the file or directory does not exist.
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 async fn service_function(
     request: Request<Incoming>,
     onion_address: String,
@@ -305,7 +308,7 @@ async fn service_function(
         file_path = data_dir_canon;
     }
 
-    info!("Visit: {}", onion_address);
+    info!("Visit: {onion_address}");
 
     let response = if visitor_tracking {
         // Get or create session ID
