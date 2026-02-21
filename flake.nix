@@ -55,10 +55,10 @@
                 custom_pkgs.stdenv.cc
                 pkgs.perl
               ]
-              ++ pkgs.lib.optionals custom_pkgs.stdenv.buildPlatform.isWindows [
+              ++ custom_pkgs.lib.optionals custom_pkgs.stdenv.hostPlatform.isWindows [
                 custom_pkgs.windows.pthreads
               ]
-              ++ pkgs.lib.optionals custom_pkgs.stdenv.buildPlatform.isDarwin [
+              ++ custom_pkgs.lib.optionals custom_pkgs.stdenv.hostPlatform.isDarwin [
                 custom_pkgs.libiconv
               ];
           };
