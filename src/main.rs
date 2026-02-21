@@ -1,17 +1,11 @@
-mod management;
-mod onion_http_server;
-mod utils;
-
-use crate::onion_http_server::load_visit_log;
-use crate::utils::{generate_key, get_onion_address};
-use arti_client::TorClient;
-use arti_client::config::TorClientConfigBuilder;
+use arti_facts::start_service_blocking;
 use clap::{Arg, Command};
+use env_logger;
+use log::error;
 use log::info;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 
 fn cli_args() -> clap::ArgMatches {
     Command::new("arti-facts")
@@ -58,33 +52,30 @@ fn cli_args() -> clap::ArgMatches {
                 .long("tracking")
                 .action(clap::ArgAction::SetTrue)
                 .help("Enable visit tracking (saves visit counts in config directory)"),
-        ).arg(
+        )
+        .arg(
             Arg::new("managed")
                 .long("managed")
                 .action(clap::ArgAction::SetTrue)
-                .help("Run the service in managed mode, where it serves a static HTML page with management page to manage shared folders and its onion address"),
-        ).arg(
+                .help("Run the service in managed mode, serving the management UI"),
+        )
+        .arg(
             Arg::new("proxy")
                 .short('p')
                 .long("proxy")
                 .value_name("URL")
-                .help("Sets a forwarding URL.\n\
-                       Sample: 127.0.0.1:54321\n\
-                       e.g. asdfasdfasdf.onion:80 -> 127.0.0.1:54321")
-        ).arg(
+                .help("Sets a forwarding URL, e.g. 127.0.0.1:54321"),
+        )
+        .arg(
             Arg::new("extended-proxy")
                 .long("extended-proxy")
                 .value_name("(PORT, URL)")
-                .help("Sets an extended forwarding URL for the Tor client.\n\
-                    Example: (12345, 127.0.0.1:54321)\n\
-                    This maps asdfasdfasdf.onion:12345 -> 127.0.0.1:54321",
-                )
+                .help("Sets an extended forwarding URL for the Tor client.\nExample: (12345, 127.0.0.1:54321)"),
         )
         .get_matches()
 }
 
-#[allow(clippy::too_many_lines)]
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = cli_args();
 
     // Initialize logging based on verbosity level
@@ -100,8 +91,9 @@ fn main() {
         .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
         .init();
 
-    let current_directory = std::env::current_dir().unwrap();
+    let current_directory = std::env::current_dir().expect("failed to determine current directory");
 
+    // Determine data_directory (what to share)
     let data_directory = if let Some(dir) = matches.get_one::<String>("directory") {
         info!("Working directory: {dir}");
         Path::new(dir).canonicalize().unwrap_or_else(|_| {
@@ -115,121 +107,26 @@ fn main() {
 
     println!("Sharing directory: {}", data_directory.display());
 
-    let mut secret_key = if let Some(hex_key) = matches.get_one::<String>("key") {
-        assert_eq!(
-            hex_key.len(),
-            64,
-            "Secret key must be a 32-byte hexadecimal string (64 characters)."
-        );
-        let mut sk = [0u8; 32];
-        hex::decode_to_slice(hex_key, &mut sk).expect("Invalid hex string for secret key");
-        Some(sk)
-    } else {
-        None
-    };
+    // Secret key as hex if provided
+    let secret_key_hex = matches.get_one::<String>("key").map(|s| s.to_string());
 
+    // Determine config_directory (pass-through; the library will create its own subi-dirs)
     let config_directory = if let Some(cfg) = matches.get_one::<String>("config") {
-        let config_path = Path::new(cfg);
+        let config_path = PathBuf::from(cfg);
         if config_path.exists() && config_path.is_dir() {
-            config_path.canonicalize().unwrap()
+            config_path.canonicalize().unwrap_or(config_path)
         } else {
             current_directory.clone()
         }
     } else {
         info!("No config file specified, using default.");
-        std::env::current_dir().unwrap()
-    };
-    // If a key is provided, create a directory for the config with onion service name from the key.
-    // If that directory does not exist, create it, if it does, use it.
-    // If no key is provided, check if any directory exists that starts with .arti-fact-config.
-    // If no such directory exists, create one.
-    // If exactly one such directory exists, use it.
-    // If multiple such directories exist, make the user choose one in the CLI.
-
-    let config_directory = if let Some(sk) = secret_key {
-        // Use onion address as config dir name
-        let onion_addr = get_onion_address(
-            &ed25519_dalek::SigningKey::from_bytes(&sk)
-                .verifying_key()
-                .to_bytes(),
-        );
-        let dir_name = format!(".arti-fact-config-{onion_addr}");
-        let dir_path = config_directory.join(dir_name.clone()).clone();
-        if !dir_path.exists() {
-            fs::create_dir_all(&dir_path).expect("Failed to create config directory");
-        }
-        dir_path.canonicalize().unwrap()
-    } else {
-        // Find all dirs starting with .arti-fact-config
-        let mut config_dirs: Vec<_> = fs::read_dir(config_directory.clone())
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with(".arti-fact-config")
-            })
-            .collect();
-
-        match config_dirs.len() {
-            0 => {
-                // Create new
-                secret_key = Some(generate_key());
-                let onion_addr = get_onion_address(
-                    &ed25519_dalek::SigningKey::from_bytes(&secret_key.unwrap())
-                        .verifying_key()
-                        .to_bytes(),
-                );
-                let dir_name = format!(".arti-fact-config-{onion_addr}");
-                let dir_path = config_directory.join(dir_name).clone();
-                fs::create_dir_all(&dir_path).expect("Failed to create config directory");
-                dir_path.canonicalize().unwrap()
-            }
-            1 => config_dirs.pop().unwrap().path().canonicalize().unwrap(),
-            _ => {
-                // Ask user to choose
-                println!("Multiple config directories found:");
-                println!("  [0] Create a new directory");
-                for (i, entry) in config_dirs.iter().enumerate() {
-                    println!("  [{}] {}", i + 1, entry.path().display());
-                }
-                println!("Select a config directory by number:");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-                let idx: usize = input.trim().parse().expect("Invalid input");
-                if idx == 0 {
-                    // Create new
-                    secret_key = Some(generate_key());
-                    let onion_addr = get_onion_address(
-                        &ed25519_dalek::SigningKey::from_bytes(&secret_key.unwrap())
-                            .verifying_key()
-                            .to_bytes(),
-                    );
-                    let dir_name = format!(".arti-fact-config-{onion_addr}");
-                    let dir_path = config_directory.join(dir_name).clone();
-                    fs::create_dir_all(&dir_path).expect("Failed to create config directory");
-                    dir_path.canonicalize().unwrap()
-                } else {
-                    config_dirs
-                        .get(idx - 1)
-                        .expect("Invalid selection")
-                        .path()
-                        .canonicalize()
-                        .unwrap()
-                }
-            }
-        }
+        current_directory.clone()
     };
 
     println!("Using config directory: {}", config_directory.display());
 
-    // if secret_key is Some, print it in hex format
-    if let Some(sk) = secret_key {
-        println!("Using secret key: {}", hex::encode(sk));
-    }
-
-    let custom_css = if let Some(css_file) = matches.get_one::<String>("css") {
+    // Read custom CSS file if provided (we pass the content to the library)
+    let custom_css_content = if let Some(css_file) = matches.get_one::<String>("css") {
         let css_path = PathBuf::from(css_file);
         if css_path.exists() && css_path.is_file() {
             println!("Using custom CSS from: {css_file}");
@@ -241,90 +138,84 @@ fn main() {
         None
     };
 
-    let visitor_tracking = if matches.get_flag("tracking") {
-        info!("Visit tracking enabled, saving visit counts in config directory");
-        load_visit_log(&config_directory);
-        true
-    } else {
-        info!("Visit tracking disabled");
-        false
-    };
-
-    let mut proxy_url = if matches.get_one::<String>("proxy").is_some() {
-        let sock_addr: SocketAddr = matches
-            .get_one::<String>("proxy")
-            .map(std::string::ToString::to_string)
-            .unwrap()
-            .parse()
-            .expect("Invalid proxy URL format");
-        Some((80, sock_addr))
+    // Build a proxy string to pass to the FFI-friendly function.
+    // We accept either `proxy` or `extended-proxy`. For extended-proxy we strip surrounding parens.
+    let proxy_param = if let Some(p) = matches.get_one::<String>("proxy") {
+        Some(p.to_string())
+    } else if let Some(ext) = matches.get_one::<String>("extended-proxy") {
+        // remove possible parentheses and pass the inner string (e.g. "12345, 127.0.0.1:54321")
+        let trimmed = ext.trim().trim_start_matches('(').trim_end_matches(')');
+        Some(trimmed.to_string())
     } else {
         None
     };
 
-    proxy_url = if let Some(ext_proxy) = matches.get_one::<String>("extended-proxy") {
-        // Remove possible parentheses and whitespace, then split
-        let trimmed = ext_proxy
-            .trim()
-            .trim_start_matches('(')
-            .trim_end_matches(')');
-        let parts: Vec<&str> = trimmed.split(',').map(str::trim).collect();
-        assert!((parts.len() == 2), "Invalid extended proxy format, expected (PORT, URL)");
-        let port: u16 = parts[0]
-            .parse()
-            .expect("Invalid port number in extended proxy");
-        let sock_addr: SocketAddr = parts[1].parse().expect("Invalid URL in extended proxy");
-        Some((port, sock_addr))
-    } else {
-        proxy_url
-    };
+    let visitor_tracking = matches.get_flag("tracking");
+    let managed = matches.get_flag("managed");
 
-    info!("Starting Tor client");
+    // Convert paths
+    let data_directory = PathBuf::from(data_directory);
+    let config_directory = PathBuf::from(config_directory);
 
-    let rt = if let Ok(runtime) = PreferredRuntime::current() {
-        runtime
-    } else {
-        PreferredRuntime::create().expect("could not create async runtime")
-    };
-
-    let mut config = TorClientConfigBuilder::from_directories(
-        config_directory.join("arti-config"),
-        config_directory.join("arti-cache"),
-    );
-    config.address_filter().allow_onion_addrs(true);
-
-    let config = config.build().expect("error building tor config");
-
-    let binding = TorClient::with_runtime(rt.clone()).config(config);
-    let client_future = binding.create_bootstrapped();
-
-    rt.block_on(async {
-        let client = client_future.await.unwrap();
-
-        info!("Tor client started");
-
-        if matches.get_flag("managed") {
-            management::run_managed_service(
-                client.clone(),
-                config_directory,
-                custom_css,
-                visitor_tracking,
-            )
-            .await;
-        } else {
-            onion_http_server::onion_service_from_sk(
-                client.clone(),
-                data_directory,
-                config_directory,
-                secret_key,
-                custom_css,
-                proxy_url,
-                visitor_tracking,
-            )
-            .await;
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
+    // Parse secret key if provided
+    let secret_key = if let Some(hex_key) = secret_key_hex {        
+        if hex_key.len() != 64 {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "secret_key_hex must be 64 hex characters (32 bytes)",
+            )));
         }
-    });
+        let mut sk = [0u8; 32];
+        if let Err(e) = hex::decode_to_slice(&hex_key, &mut sk) {
+            error!("invalid hex string for secret key: {}", e);
+            return Err(Box::new(e));
+        }
+        Some(sk)
+    } else {
+        None
+    };
+
+    // Parse proxy if provided
+    let forward_proxy: Option<(u16, SocketAddr)> = if let Some(proxy_str) = proxy_param {
+        let trimmed = proxy_str.trim();
+        // If contains comma, treat as (PORT,ADDR)
+        if trimmed.contains(',') {
+            let parts: Vec<&str> = trimmed.split(',').map(str::trim).collect();
+            if parts.len() != 2 {                
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "proxy must be in format \"PORT,ADDR\" or \"ADDR\"",
+                )));
+            }
+            let port: u16 = parts[0].parse().map_err(|_| "invalid port in proxy")?;
+            let addr: SocketAddr = parts[1].parse().map_err(|_| "invalid address in proxy")?;
+            Some((port, addr))
+        } else {
+            // Single address: assume port 80
+            let addr: SocketAddr = trimmed.parse().map_err(|_| "invalid address in proxy")?;
+            Some((80, addr))
+        }
+    } else {
+        None
+    };
+
+    // Call the blocking entry
+    match start_service_blocking(
+        data_directory,
+        config_directory,
+        secret_key,
+        custom_css_content,
+        forward_proxy,
+        visitor_tracking,
+        managed,
+    ) {
+        Ok(msg) => {
+            println!("Service finished successfully");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Failed to start service: {e}");
+            Err(e)
+        }
+    }
 }
