@@ -1,11 +1,19 @@
 use arti_facts::start_service_blocking;
 use clap::{Arg, Command};
-use env_logger;
 use log::error;
 use log::info;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use tracing_subscriber::{
+    filter::{EnvFilter, LevelFilter},
+    fmt,
+    prelude::*,
+};
+use tracing_subscriber::fmt::Subscriber;
+
+use pwd_grp::{PwdGrp, PwdGrpProvider};
+
 
 fn cli_args() -> clap::ArgMatches {
     Command::new("arti-facts")
@@ -75,24 +83,88 @@ fn cli_args() -> clap::ArgMatches {
         .get_matches()
 }
 
+fn init_logging(cli_loglevel:u8) {
+    // Start with: default=info, arti crates=error
+    
+    let log_level = match cli_loglevel {
+        0 => LevelFilter::ERROR,
+        1 => LevelFilter::INFO,
+        2 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
+    };
+
+    let mut filter = EnvFilter::builder()
+        .parse_lossy(format!("arti_facts={log_level},arti_client=error,tor_hsservice=error,tor_dirmgr=error,tor_guardmgr=error,tor_circmgr=error"));
+
+    // If ARTI_LOG is set, override the arti crate levels with whatever it says.
+    // e.g. ARTI_LOG=debug  → sets both arti crates to debug
+    // e.g. ARTI_LOG=arti_client=warn,tor_stuff=trace  → fine-grained control
+    if let Ok(arti_log) = std::env::var("ARTI_LOG") {
+        for directive in arti_log.split(',') {
+            let directive = directive.trim();
+            if directive.is_empty() { continue; }
+
+            // If it's a bare level like "debug", apply it to all arti crates
+            if let Ok(level) = directive.parse::<LevelFilter>() {
+                filter = filter
+                    .add_directive(format!("arti_client={level}").parse().unwrap())
+                    .add_directive(format!("tor_hsservice={level}").parse().unwrap())
+                    .add_directive(format!("tor_dirmgr={level}").parse().unwrap())
+                    .add_directive(format!("tor_guardmgr={level}").parse().unwrap())
+                    .add_directive(format!("tor_circmgr={level}").parse().unwrap());
+            } else {
+                // Otherwise treat it as a full directive like "arti_client=warn"
+                if let Ok(d) = directive.parse() {
+                    filter = filter.add_directive(d);
+                }
+            }
+        }
+    }
+
+    // Also respect RUST_LOG for your own crate's level, if set.
+    // Directives added later override earlier ones for the same target,
+    // so RUST_LOG can still override everything if you want.
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        for directive in rust_log.split(',') {
+            if let Ok(d) = directive.trim().parse() {
+                filter = filter.add_directive(d);
+            }
+        }
+    }
+
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(filter)
+        .init();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = cli_args();
 
     // Initialize logging based on verbosity level
-    let log_level = match matches.get_count("verbose") {
-        0 => log::LevelFilter::Error,
-        1 => log::LevelFilter::Info,
-        2 => log::LevelFilter::Debug,
-        _ => log::LevelFilter::Trace,
-    };
+    init_logging(matches.get_count("verbose"));    
 
-    env_logger::Builder::new()
-        .filter_level(log_level)
-        .format_timestamp(Some(env_logger::TimestampPrecision::Millis))
-        .init();
+    
+    // info!("current user: {:?}",     PwdGrp.getgroups());
+    // info!("current user: {:?}",     PwdGrp.getegid());
+    // info!("current user: {:?}",     PwdGrp.getgid());
+    // info!("current user: {:?}",     PwdGrp.geteuid());
+    // info!("current user: {:?}",     PwdGrp.getuid());
+    
+    // let mut mistrust_builder = fs_mistrust::MistrustBuilder::default();
+    
+    // mistrust_builder.dangerously_trust_everyone();
+    
+    // let mistrust = mistrust_builder.build().unwrap();
+    
+    // match mistrust.check_directory("/home/kemp/ins/development/Arti-Facts") {
+    //     Ok(()) => println!("directory is good"),
+    //     Err(e) => println!("problem with our hat-swap directory: {}", e),
+    // }
+
 
     let current_directory = std::env::current_dir().expect("failed to determine current directory");
-
+    
     // Determine data_directory (what to share)
     let data_directory = if let Some(dir) = matches.get_one::<String>("directory") {
         info!("Working directory: {dir}");
@@ -105,7 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         current_directory.clone()
     };
 
-    println!("Sharing directory: {}", data_directory.display());
+    info!("Sharing directory: {}", data_directory.display());
 
     // Secret key as hex if provided
     let secret_key_hex = matches.get_one::<String>("key").map(|s| s.to_string());
@@ -123,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         current_directory.clone()
     };
 
-    println!("Using config directory: {}", config_directory.display());
+    info!("Using config directory: {}", config_directory.display());
 
     // Read custom CSS file if provided (we pass the content to the library)
     let custom_css_content = if let Some(css_file) = matches.get_one::<String>("css") {
@@ -209,7 +281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         visitor_tracking,
         managed,
     ) {
-        Ok(msg) => {
+        Ok(_) => {
             println!("Service finished successfully");
             Ok(())
         }

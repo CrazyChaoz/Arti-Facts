@@ -5,7 +5,7 @@
     crane.url = "github:ipetkov/crane";
 
     fenix = {
-      url = "github:nix-community/fenix";
+      url = "github:nix-community/fenix?rev=6b5325a017a9a9fe7e6252ccac3680cc7181cd63";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
@@ -23,13 +23,19 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          config = {
+            allowUnfree = true;
+            allowUnsupportedSystem = true;
+          };
+        };
 
         toolchain =
           with fenix.packages.${system};
           combine [
-            minimal.rustc
-            minimal.cargo
+            default.rustc
+            default.cargo
             targets.x86_64-pc-windows-gnu.latest.rust-std
             targets.x86_64-unknown-linux-musl.latest.rust-std
           ];
@@ -50,17 +56,16 @@
             # fixes issues related to libring
             TARGET_CC = "${custom_pkgs.stdenv.cc}/bin/${custom_pkgs.stdenv.cc.targetPrefix}cc";
 
-            depsBuildBuild =
-              [
-                custom_pkgs.stdenv.cc
-                pkgs.perl
-              ]
-              ++ custom_pkgs.lib.optionals custom_pkgs.stdenv.hostPlatform.isWindows [
-                custom_pkgs.windows.pthreads
-              ]
-              ++ custom_pkgs.lib.optionals custom_pkgs.stdenv.hostPlatform.isDarwin [
-                custom_pkgs.libiconv
-              ];
+            depsBuildBuild = [
+              custom_pkgs.stdenv.cc
+              pkgs.perl
+            ]
+            ++ custom_pkgs.lib.optionals custom_pkgs.stdenv.hostPlatform.isWindows [
+              custom_pkgs.windows.pthreads
+            ]
+            ++ custom_pkgs.lib.optionals custom_pkgs.stdenv.hostPlatform.isDarwin [
+              custom_pkgs.libiconv
+            ];
           };
 
       in

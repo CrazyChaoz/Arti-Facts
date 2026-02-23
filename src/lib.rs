@@ -21,87 +21,12 @@ pub use utils::{generate_key, get_onion_address};
 use arti_client::TorClient;
 use arti_client::config::TorClientConfigBuilder;
 use log::info;
+use log::debug;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 
-/// Create and bootstrap an arti `TorClient` using directories under `config_directory`.
-///
-/// This mirrors the configuration used in the binary: arti-config and arti-cache are created
-/// inside the provided `config_directory`.
-///
-/// On success returns a bootstrapped `TorClient<PreferredRuntime>`.
-pub async fn create_tor_client(
-    config_directory: PathBuf,
-) -> Result<TorClient<PreferredRuntime>, Box<dyn Error + Send + Sync>> {
-    // Build the Tor client configuration (same directories layout as the binary)
-    let mut config = TorClientConfigBuilder::from_directories(
-        config_directory.join("arti-config"),
-        config_directory.join("arti-cache"),
-    );
-    config.address_filter().allow_onion_addrs(true);
-
-    let config = config.build()?;
-
-    // Select or create a runtime
-    let rt = if let Ok(runtime) = PreferredRuntime::current() {
-        runtime
-    } else {
-        PreferredRuntime::create()?
-    };
-
-    let binding = TorClient::with_runtime(rt.clone()).config(config);
-    let client_future = binding.create_bootstrapped();
-
-    // Await the bootstrap on the runtime we selected/created
-    let client = client_future.await?;
-    Ok(client)
-}
-
-/// Start an onion service (non-managed mode) using an already bootstrapped `TorClient`.
-///
-/// This is an async, non-blocking function: the called `onion_http_server::onion_service_from_sk`
-/// will spawn background tasks and manage the service lifetime itself. Awaiting this function
-/// will await the inner startup process, but in the common case the inner routines keep running
-/// forever (so this future will not return unless the service terminates).
-pub async fn start_onion_service_async(
-    client: TorClient<PreferredRuntime>,
-    data_directory: PathBuf,
-    config_directory: PathBuf,
-    secret_key: Option<[u8; 32]>,
-    custom_css: Option<String>,
-    forward_proxy: Option<(u16, SocketAddr)>,
-    visitor_tracking: bool,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    info!("Starting onion service (async)");
-    onion_http_server::onion_service_from_sk(
-        client,
-        data_directory,
-        config_directory,
-        secret_key,
-        custom_css,
-        forward_proxy,
-        visitor_tracking,
-    )
-    .await;
-    Ok(())
-}
-
-/// Run the managed service (management UI) using an already bootstrapped `TorClient`.
-///
-/// This function awaits the management service; the implementation will accept connections
-/// and normally does not return unless the runtime or listener stops.
-pub async fn run_managed_service_async(
-    client: TorClient<PreferredRuntime>,
-    config_directory: PathBuf,
-    custom_css: Option<String>,
-    visitor_tracking: bool,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    info!("Starting managed service (async)");
-    management::run_managed_service(client, config_directory, custom_css, visitor_tracking).await;
-    Ok(())
-}
 
 /// Convenience blocking entry point which mirrors the behaviour of the original binary.
 ///
@@ -128,17 +53,37 @@ pub fn start_service_blocking(
     } else {
         PreferredRuntime::create()?
     };
+    
+    debug!("Runtime initialized");
+    
+    let nickname = if secret_key.is_some() {
+        format!(
+            ".arti-facts-service-{}",
+            get_onion_address(
+                utils::keypair_from_sk(secret_key.unwrap())
+                    .public()
+                    .as_bytes()
+            )
+        )
+    } else {
+        ".arti-facts-service".into()
+    };
 
-    // Build tor config (same as create_tor_client)
+    let config_directory = config_directory.join(nickname.clone());
+    
     let mut cfg_builder = TorClientConfigBuilder::from_directories(
         config_directory.join("arti-config"),
         config_directory.join("arti-cache"),
     );
     cfg_builder.address_filter().allow_onion_addrs(true);
-    let cfg = cfg_builder.build()?;
+    cfg_builder.storage().permissions().dangerously_trust_everyone();
 
+    let cfg = cfg_builder.build()?;
+    
     let binding = TorClient::with_runtime(rt.clone()).config(cfg);
     let client_future = binding.create_bootstrapped();
+    
+    info!("TorClient built");
 
     rt.block_on(async {
         let client = client_future.await?;
@@ -148,7 +93,6 @@ pub fn start_service_blocking(
             management::run_managed_service(client, config_directory, custom_css, visitor_tracking)
                 .await;
             // run_managed_service doesn't return until it stops
-            Ok::<(), Box<dyn Error + Send + Sync>>(())
         } else {
             onion_http_server::onion_service_from_sk(
                 client,
@@ -160,9 +104,12 @@ pub fn start_service_blocking(
                 visitor_tracking,
             )
             .await;
-            // The onion service path similarly runs until shutdown
-            Ok(())
         }
+        
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        Ok::<(), Box<dyn Error + Send + Sync>>(())
     })?;
     Ok(())
 }
@@ -174,8 +121,8 @@ pub fn start_service_blocking(
 /// Returns Ok(\"started\") on success (the service normally runs indefinitely), or Err with an error message.
 pub fn start_service_ffi(data_dir: &str, config_dir: &str) -> Result<String, String> {
     // Convert paths
-    let data_directory = PathBuf::from(data_dir);
-    let config_directory = PathBuf::from(config_dir);
+    let data_directory = PathBuf::from(data_dir).join(".arti-facts");
+    let config_directory = PathBuf::from(config_dir).join(".arti-facts");
 
 
     // Call the blocking entry

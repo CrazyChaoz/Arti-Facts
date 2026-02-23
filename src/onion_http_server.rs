@@ -11,19 +11,20 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use log::{error, info};
+use log::{error, info, debug};
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
-use tor_proto::stream::IncomingStreamRequest;
+use tor_proto::client::stream::IncomingStreamRequest;
 use tor_rtcompat::PreferredRuntime;
+use safelog::DisplayRedacted;
 
 use crate::utils;
 use crate::utils::get_onion_address;
@@ -111,10 +112,13 @@ pub(crate) async fn onion_service_from_sk(
         Pin<Box<dyn Stream<Item = tor_hsservice::RendRequest> + Send>>,
     ) = if secret_key.is_none() {
         // We are trying to reuse an old instance
-        let (service, stream) = tor_client
-            .launch_onion_service(svc_cfg)
-            .expect("error creating onion service");
-        (service, Box::pin(stream))
+        match tor_client
+            .launch_onion_service(svc_cfg.clone())
+            .expect("error creating onion service")
+        {
+            Some((service, stream)) => (service, Box::pin(stream)),
+            None => panic!("error creating onion service")
+        }
     } else {
         let secret_key = secret_key.unwrap();
 
@@ -122,16 +126,21 @@ pub(crate) async fn onion_service_from_sk(
 
         let encodable_key = tor_hscrypto::pk::HsIdKeypair::from(expanded_key_pair);
 
-        if let Ok((service, stream)) =
-            tor_client.launch_onion_service_with_hsid(svc_cfg.clone(), encodable_key)
+        match tor_client
+            .launch_onion_service_with_hsid(svc_cfg.clone(), encodable_key)
+            .expect("error creating onion service")
         {
-            (service, Box::pin(stream))
-        } else {
-            // This key exists; reuse it
-            let (service, stream) = tor_client
-                .launch_onion_service(svc_cfg)
-                .expect("error creating onion service");
-            (service, Box::pin(stream))
+            Some((service, stream)) => (service, Box::pin(stream)),
+            None => {
+                // This key exists; reuse it
+                match tor_client
+                    .launch_onion_service(svc_cfg)
+                    .expect("error creating onion service")
+                {
+                    Some((service, stream)) => (service, Box::pin(stream)),
+                    None => panic!("error creating onion service"),
+                }
+            }
         }
     };
 
@@ -139,15 +148,20 @@ pub(crate) async fn onion_service_from_sk(
     let clone_onion_service = onion_service.clone();
 
     let cancel_token = CancellationToken::new();
+    let tor_client_clone = tor_client.clone();
     let _ = tor_client.clone().runtime().spawn(async move {
         while let Some(status_event) = clone_onion_service.status_events().next().await {
             if status_event.state().is_fully_reachable() {
                 break;
             }
         }
+        
+        let _ = tor_client_clone.bootstrap().await;
+        debug!("Bootstrap completed");
+        
         println!(
             "This directory is now available at: {}",
-            clone_onion_service.onion_address().unwrap()
+            clone_onion_service.onion_address().unwrap().display_unredacted()
         );
         info!("onion service status: {:?}", clone_onion_service.status());
     });
@@ -159,6 +173,7 @@ pub(crate) async fn onion_service_from_sk(
                 .clone()
                 .onion_address()
                 .unwrap()
+                .display_unredacted()
                 .to_string()
                 .trim_end_matches(".onion")
                 .into(),
@@ -220,7 +235,7 @@ pub(crate) async fn onion_service_from_sk(
                                         service_fn(|request| {
                                             service_function(
                                                 request,
-                                                onion_service.onion_address().unwrap().to_string(),
+                                                onion_service.onion_address().unwrap().display_unredacted().to_string(),
                                                 data_directory.clone(),
                                                 config_directory.clone(),
                                                 custom_css.clone(),
