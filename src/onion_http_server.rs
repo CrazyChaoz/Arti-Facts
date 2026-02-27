@@ -26,6 +26,8 @@ use tor_proto::client::stream::IncomingStreamRequest;
 use tor_rtcompat::PreferredRuntime;
 use safelog::DisplayRedacted;
 
+use percent_encoding::percent_decode_str;
+
 use crate::utils;
 use crate::utils::get_onion_address;
 use tor_hsrproxy::{
@@ -225,28 +227,31 @@ pub(crate) async fn onion_service_from_sk(
                         let request = stream_request.request().clone();
                         match request {
                             IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-                                let onion_service_stream =
-                                    stream_request.accept(Connected::new_empty()).await.unwrap();
-                                let io = TokioIo::new(onion_service_stream);
-
-                                http1::Builder::new()
-                                    .serve_connection(
-                                        io,
-                                        service_fn(|request| {
-                                            service_function(
-                                                request,
-                                                onion_service.onion_address().unwrap().display_unredacted().to_string(),
-                                                data_directory.clone(),
-                                                config_directory.clone(),
-                                                custom_css.clone(),
-                                                visitor_tracking,
+                                match stream_request.accept(Connected::new_empty()).await{
+                                    Ok(onion_service_stream) =>{
+                                        let io = TokioIo::new(onion_service_stream);
+        
+                                        http1::Builder::new()
+                                            .serve_connection(
+                                                io,
+                                                service_fn(|request| {
+                                                    service_function(
+                                                        request,
+                                                        onion_service.onion_address().unwrap().display_unredacted().to_string(),
+                                                        data_directory.clone(),
+                                                        config_directory.clone(),
+                                                        custom_css.clone(),
+                                                        visitor_tracking,
+                                                    )
+                                                }),
                                             )
-                                        }),
-                                    )
-                                    .await
-                                    .unwrap_or_else(|_| {
-                                        info!("error serving connection");
-                                    });
+                                            .await
+                                            .unwrap_or_else(|_| {
+                                                info!("error serving connection");
+                                            });
+                                    }
+                                    Err(e) => error!("error serving connecion: {e}")
+                                }
                             }
                             _ => {
                                 stream_request.shutdown_circuit().unwrap();
@@ -295,8 +300,13 @@ async fn service_function(
     custom_css: Option<String>,
     visitor_tracking: bool,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>, std::io::Error> {
-    let path = request.uri().path().trim_start_matches('/').to_string();
+
+    let raw_path = request.uri().path();
+    let decoded = percent_decode_str(raw_path).decode_utf8_lossy();
+    let path = decoded.trim_start_matches('/').to_string();
     let mut file_path = data_dir.join(&path);
+    
+    info!("Decoded path: {}", path);
 
     // Prevent access to config_directory or its subdirectories
     let config_directory = config_directory.canonicalize()?;

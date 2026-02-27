@@ -10,9 +10,6 @@ use tracing_subscriber::{
     fmt,
     prelude::*,
 };
-use tracing_subscriber::fmt::Subscriber;
-
-use pwd_grp::{PwdGrp, PwdGrpProvider};
 
 
 fn cli_args() -> clap::ArgMatches {
@@ -143,25 +140,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize logging based on verbosity level
     init_logging(matches.get_count("verbose"));    
-
-    
-    // info!("current user: {:?}",     PwdGrp.getgroups());
-    // info!("current user: {:?}",     PwdGrp.getegid());
-    // info!("current user: {:?}",     PwdGrp.getgid());
-    // info!("current user: {:?}",     PwdGrp.geteuid());
-    // info!("current user: {:?}",     PwdGrp.getuid());
-    
-    // let mut mistrust_builder = fs_mistrust::MistrustBuilder::default();
-    
-    // mistrust_builder.dangerously_trust_everyone();
-    
-    // let mistrust = mistrust_builder.build().unwrap();
-    
-    // match mistrust.check_directory("/home/kemp/ins/development/Arti-Facts") {
-    //     Ok(()) => println!("directory is good"),
-    //     Err(e) => println!("problem with our hat-swap directory: {}", e),
-    // }
-
 
     let current_directory = std::env::current_dir().expect("failed to determine current directory");
     

@@ -10,41 +10,34 @@
     };
 
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
       nixpkgs,
       crane,
-      fenix,
       flake-utils,
+      rust-overlay,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs {
-          inherit system;
-          config = {
-            allowUnfree = true;
-            allowUnsupportedSystem = true;
-          };
-        };
-
-        toolchain =
-          with fenix.packages.${system};
-          combine [
-            default.rustc
-            default.cargo
-            targets.x86_64-pc-windows-gnu.latest.rust-std
-            targets.x86_64-unknown-linux-musl.latest.rust-std
-          ];
-
-        craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+        pkgs = (
+          import nixpkgs {
+            system = system;
+            config.allowUnsupportedSystem = true;
+            overlays = [ (import rust-overlay) ];
+          }
+        );
 
         buildForArchitecture =
           custom_pkgs:
-          craneLib.buildPackage {
+          ((crane.mkLib custom_pkgs).overrideToolchain (p: p.rust-bin.stable.latest.default)).buildPackage {
             name = "arti-facts-${custom_pkgs.stdenv.hostPlatform.config}";
             src = ./.;
 
@@ -53,12 +46,15 @@
 
             CARGO_BUILD_TARGET = "${custom_pkgs.stdenv.hostPlatform.rust.rustcTarget}";
             CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-            # fixes issues related to libring
+
             TARGET_CC = "${custom_pkgs.stdenv.cc}/bin/${custom_pkgs.stdenv.cc.targetPrefix}cc";
 
-            depsBuildBuild = [
+            nativeBuildInputs = [
               custom_pkgs.stdenv.cc
               pkgs.perl
+            ];
+
+            buildInputs = [
             ]
             ++ custom_pkgs.lib.optionals custom_pkgs.stdenv.hostPlatform.isWindows [
               custom_pkgs.windows.pthreads
