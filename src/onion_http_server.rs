@@ -11,7 +11,8 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use log::{error, info, debug};
+use log::{debug, error, info};
+use safelog::DisplayRedacted;
 use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
@@ -24,7 +25,6 @@ use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::config::OnionServiceConfigBuilder;
 use tor_proto::client::stream::IncomingStreamRequest;
 use tor_rtcompat::PreferredRuntime;
-use safelog::DisplayRedacted;
 
 use percent_encoding::percent_decode_str;
 
@@ -119,7 +119,7 @@ pub(crate) async fn onion_service_from_sk(
             .expect("error creating onion service")
         {
             Some((service, stream)) => (service, Box::pin(stream)),
-            None => panic!("error creating onion service")
+            None => panic!("error creating onion service"),
         }
     } else {
         let secret_key = secret_key.unwrap();
@@ -157,13 +157,16 @@ pub(crate) async fn onion_service_from_sk(
                 break;
             }
         }
-        
+
         let _ = tor_client_clone.bootstrap().await;
         debug!("Bootstrap completed");
-        
+
         println!(
             "This directory is now available at: {}",
-            clone_onion_service.onion_address().unwrap().display_unredacted()
+            clone_onion_service
+                .onion_address()
+                .unwrap()
+                .display_unredacted()
         );
         info!("onion service status: {:?}", clone_onion_service.status());
     });
@@ -227,31 +230,40 @@ pub(crate) async fn onion_service_from_sk(
                         let request = stream_request.request().clone();
                         match request {
                             IncomingStreamRequest::Begin(begin) if begin.port() == 80 => {
-                                match stream_request.accept(Connected::new_empty()).await{
-                                    Ok(onion_service_stream) =>{
-                                        let io = TokioIo::new(onion_service_stream);
-        
-                                        http1::Builder::new()
-                                            .serve_connection(
-                                                io,
-                                                service_fn(|request| {
-                                                    service_function(
-                                                        request,
-                                                        onion_service.onion_address().unwrap().display_unredacted().to_string(),
-                                                        data_directory.clone(),
-                                                        config_directory.clone(),
-                                                        custom_css.clone(),
-                                                        visitor_tracking,
-                                                    )
-                                                }),
-                                            )
-                                            .await
-                                            .unwrap_or_else(|_| {
-                                                info!("error serving connection");
-                                            });
+                                //###
+                                let onion_address = onion_service.onion_address().unwrap().display_unredacted().to_string();
+                                let data_directory = data_directory.clone();
+                                let config_directory = config_directory.clone();
+                                let custom_css = custom_css.clone();
+
+                                tokio::spawn(async move {
+                                    match stream_request.accept(Connected::new_empty()).await {
+                                        Ok(onion_service_stream) => {
+                                            let io = TokioIo::new(onion_service_stream);
+
+                                            http1::Builder::new()
+                                                .serve_connection(
+                                                    io,
+                                                    service_fn(move |request| {
+                                                        service_function(
+                                                            request,
+                                                            onion_address.clone(),
+                                                            data_directory.clone(),
+                                                            config_directory.clone(),
+                                                            custom_css.clone(),
+                                                            visitor_tracking,
+                                                        )
+                                                    }),
+                                                )
+                                                .await
+                                                .unwrap_or_else(|_| {
+                                                    info!("error serving connection");
+                                                });
+                                        }
+                                        Err(e) => error!("error serving connecion: {e}")
                                     }
-                                    Err(e) => error!("error serving connecion: {e}")
-                                }
+                                });
+                                //###
                             }
                             _ => {
                                 stream_request.shutdown_circuit().unwrap();
@@ -300,12 +312,11 @@ async fn service_function(
     custom_css: Option<String>,
     visitor_tracking: bool,
 ) -> Result<Response<BoxBody<Bytes, std::io::Error>>, std::io::Error> {
-
     let raw_path = request.uri().path();
     let decoded = percent_decode_str(raw_path).decode_utf8_lossy();
     let path = decoded.trim_start_matches('/').to_string();
     let mut file_path = data_dir.join(&path);
-    
+
     info!("Decoded path: {}", path);
 
     // Prevent access to config_directory or its subdirectories
