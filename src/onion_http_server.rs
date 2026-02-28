@@ -150,26 +150,10 @@ pub(crate) async fn onion_service_from_sk(
     let clone_onion_service = onion_service.clone();
 
     let cancel_token = CancellationToken::new();
-    let tor_client_clone = tor_client.clone();
-    let _ = tor_client.clone().runtime().spawn(async move {
-        while let Some(status_event) = clone_onion_service.status_events().next().await {
-            if status_event.state().is_fully_reachable() {
-                break;
-            }
-        }
-
-        let _ = tor_client_clone.bootstrap().await;
-        debug!("Bootstrap completed");
-
-        println!(
-            "This directory is now available at: {}",
-            clone_onion_service
-                .onion_address()
-                .unwrap()
-                .display_unredacted()
-        );
-        info!("onion service status: {:?}", clone_onion_service.status());
-    });
+    
+    if (visitor_tracking){
+        load_visit_log(config_directory.as_path());
+    }
 
     let _ = tor_client.clone().runtime().spawn(async move {
         let clone_running_onion_services = RUNNING_ONION_SERVICES.clone();
@@ -183,6 +167,14 @@ pub(crate) async fn onion_service_from_sk(
                 .trim_end_matches(".onion")
                 .into(),
             cancel_token.clone(),
+        );
+        
+        info!(
+            "This directory is available at: {}",
+            clone_onion_service
+                .onion_address()
+                .unwrap()
+                .display_unredacted()
         );
 
         if let Some(forward_proxy) = forward_proxy {
@@ -352,6 +344,7 @@ async fn service_function(
 
         // Record visit
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let timestamp_and_path = format!("{timestamp}: {path}");
 
         {
             let mut visits = VISIT_COUNTS.lock().unwrap();
@@ -360,7 +353,7 @@ async fn service_function(
                 .or_default()
                 .entry(session_id.clone())
                 .or_default()
-                .push(timestamp);
+                .push(timestamp_and_path);
         }
 
         // Save visit log
